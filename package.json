@@ -1,0 +1,19 @@
+{
+  "name": "riptide-arcade",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Small static browser games built as Riptide tasks: single-file games from templates/base-game.html, verified headlessly through the window.__test hook.",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "verify": "node tools/verify/index.js",
+    "playtest": "node tools/playtest/index.js",
+    "regression": "node tests/regression/run.js"
+  },
+  "devDependencies": {
+    "playwright": "^1.63.0"
+  }
+}
