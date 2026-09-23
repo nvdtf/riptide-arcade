@@ -97,7 +97,7 @@ names. Sizes are **bytes**, so no unit is ever ambiguous.
 | `assets.maxGlbTriangles` | number | `50000` | per-model triangle cap read from the GLB JSON chunk (dormant) |
 | `assets.requireRigCheck` | boolean | `true` | each `<asset>.meta.json` must declare a passing rig check (dormant) |
 
-Current usage: `index.html` 45,987 B of 204,800 B (22%), directory 57,519 B of
+Current usage: `index.html` 46,226 B of 204,800 B (23%), directory 57,758 B of
 512,000 B (11%) — both comfortably inside budget.
 
 ## `playtest.probe.js`
