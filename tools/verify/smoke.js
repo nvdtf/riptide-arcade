@@ -7,20 +7,25 @@
 //   4. tick 600 steps
 //   5. assert the state is sane and errors are still empty
 //
+// Loads `budgets.entry` (fix round A3), defaulting to `index.html` when the
+// game dir declares no budgets.json / no `entry` key.
+//
 // Individually runnable: `node tools/verify/smoke.js <game-dir>`
 // Also imported by tools/verify/index.js, which calls run() directly.
 
 import { openGame } from '../lib/browser.js';
 import { gotoGameAndWaitForMenu } from '../lib/hook.js';
+import { loadBudgets } from './lib/budgets.js';
 import { runAsCli, isMain } from './lib/cli.js';
 
 const IDLE_TICKS = 600;
 
 export async function run(gameDir) {
   const details = [];
+  const budgets = await loadBudgets(gameDir);
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
-    const hook = await gotoGameAndWaitForMenu(page, baseURL, 'index.html');
+    const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry);
     details.push('reached MENU after load');
 
     const errorsAtMenu = await hook.errors();

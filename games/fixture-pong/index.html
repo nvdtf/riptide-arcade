@@ -22,13 +22,16 @@
    `primary` on the game-over screen restarts a FULL fresh run.
 
  NUMBERS THE TOOLING NEEDS  (all measured, not estimated — see games/fixture-pong/README.md)
-   * Idle run (start the game, then inject nothing): GAME_OVER at ~1030-1060 ticks
-     from the PLAYING transition, for every seed. That is deliberately far beyond
-     smoke.js's 600 idle ticks, so at tick 600 the game is unambiguously still
-     PLAYING with errors empty — the smoke assertion can never be ambiguous.
+   * Idle run (start the game, then inject nothing): GAME_OVER at 1020-1075 ticks
+     from the PLAYING transition, measured across 300 seeds (fix round A11 —
+     the header previously said ~1030-1060, which undershot the measured max).
+     That is deliberately far beyond smoke.js's 600 idle ticks, so at tick 600
+     the game is unambiguously still PLAYING with errors empty (confirmed at
+     all 300 measured seeds) — the smoke assertion can never be ambiguous.
    * Fastest route to GAME_OVER: press `primary` during each serve delay to serve
      immediately (skips up to 60 ticks each). Idle-but-serving reaches GAME_OVER
-     in ~865 ticks. There is no way to lose faster than three missed descents.
+     in 850-880 ticks, measured across 40 seeds (seed 1: 880 ticks). There is no
+     way to lose faster than three missed descents.
    * The serve is guaranteed to MISS a stationary paddle on every seed: the serve
      angle is drawn so the ball's horizontal travel over the descent is 97-152
      world units, always more than the 56 units (paddle half-width + ball radius)
@@ -881,7 +884,10 @@
       transitions: Machine.count(),
       lastTransition: Machine.last(),
       rng: RNG.info(),
-      reducedMotion: Flags.reducedMotion
+      reducedMotion: Flags.reducedMotion,
+      // Fix round (A10): mirrors templates/base-game.html verbatim — Audio.info()
+      // in the base snapshot so a continuous-audio leak is observable to any verifier.
+      audio: Audio.info()
     };
     var merged = base;
     var contributions = [Game.snapshot()].concat(exposers.map(function (fn) {

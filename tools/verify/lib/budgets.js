@@ -40,6 +40,84 @@ export const DEFAULT_BUDGETS = Object.freeze({
   })
 });
 
+// SCHEMA / TYPE-CHECKING (fix round, finding C2): a type slip in budgets.json
+// used to be silently ignored — a string where an array was expected, a
+// numeric-looking string where a number was expected, or a misspelled key —
+// and the game would then pass every budget check for the wrong reason (the
+// budget was effectively disabled, not honoured). Every declared key is now
+// validated; any violation is a thrown Error naming the offending key and
+// what was wrong with it. There is no silent default for a key that IS
+// present but malformed — only an ABSENT key falls back to DEFAULT_BUDGETS.
+// `progressKeys` (fix round C3): the snapshot keys a game declares as proof
+// that gameplay itself advanced, consumed by tools/verify/journey.js — see
+// that file's header comment. Not used by budget.js itself, but it lives in
+// the same budgets.json, so it is validated here alongside everything else.
+const ALLOWED_TOP_KEYS = new Set(['budgetsVersion', 'entry', 'maxFileBytes', 'maxDirBytes', 'excludeGlobs', 'progressKeys', 'assets']);
+const ALLOWED_ASSET_KEYS = new Set(['maxGlbFileBytes', 'maxGlbTriangles', 'requireRigCheck']);
+
+function isFiniteNonNegativeNumber(v) {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+/** @returns {string[]} human-readable problem descriptions, one per violation, empty when clean */
+function validateBudgets(declared) {
+  const problems = [];
+
+  for (const key of Object.keys(declared)) {
+    if (!ALLOWED_TOP_KEYS.has(key)) {
+      problems.push(`unknown top-level key "${key}" (check for a typo — allowed keys: ${[...ALLOWED_TOP_KEYS].join(', ')})`);
+    }
+  }
+
+  if (declared.budgetsVersion !== undefined && !isFiniteNonNegativeNumber(declared.budgetsVersion)) {
+    problems.push(`"budgetsVersion" must be a finite non-negative number, got ${JSON.stringify(declared.budgetsVersion)}`);
+  }
+  if (declared.entry !== undefined && (typeof declared.entry !== 'string' || declared.entry.length === 0)) {
+    problems.push(`"entry" must be a non-empty string, got ${JSON.stringify(declared.entry)}`);
+  }
+  if (declared.maxFileBytes !== undefined && !isFiniteNonNegativeNumber(declared.maxFileBytes)) {
+    problems.push(`"maxFileBytes" must be a finite non-negative number, got ${JSON.stringify(declared.maxFileBytes)} (a string like "20KB" is NOT accepted — units are not parsed, use bytes)`);
+  }
+  if (declared.maxDirBytes !== undefined && !isFiniteNonNegativeNumber(declared.maxDirBytes)) {
+    problems.push(`"maxDirBytes" must be a finite non-negative number, got ${JSON.stringify(declared.maxDirBytes)}`);
+  }
+  if (declared.excludeGlobs !== undefined) {
+    const isArrayOfStrings = Array.isArray(declared.excludeGlobs) && declared.excludeGlobs.every((g) => typeof g === 'string');
+    if (!isArrayOfStrings) {
+      problems.push(`"excludeGlobs" must be an array of strings, got ${JSON.stringify(declared.excludeGlobs)} (a bare string is iterated character-by-character, not treated as one glob)`);
+    }
+  }
+  if (declared.progressKeys !== undefined) {
+    const isArrayOfStrings = Array.isArray(declared.progressKeys) && declared.progressKeys.every((g) => typeof g === 'string');
+    if (!isArrayOfStrings) {
+      problems.push(`"progressKeys" must be an array of strings, got ${JSON.stringify(declared.progressKeys)}`);
+    }
+  }
+  if (declared.assets !== undefined) {
+    if (declared.assets === null || typeof declared.assets !== 'object' || Array.isArray(declared.assets)) {
+      problems.push(`"assets" must be an object, got ${JSON.stringify(declared.assets)}`);
+    } else {
+      const a = declared.assets;
+      for (const key of Object.keys(a)) {
+        if (!ALLOWED_ASSET_KEYS.has(key)) {
+          problems.push(`unknown key "assets.${key}" (check for a typo — allowed keys: ${[...ALLOWED_ASSET_KEYS].join(', ')})`);
+        }
+      }
+      if (a.maxGlbFileBytes !== undefined && !isFiniteNonNegativeNumber(a.maxGlbFileBytes)) {
+        problems.push(`"assets.maxGlbFileBytes" must be a finite non-negative number, got ${JSON.stringify(a.maxGlbFileBytes)}`);
+      }
+      if (a.maxGlbTriangles !== undefined && !isFiniteNonNegativeNumber(a.maxGlbTriangles)) {
+        problems.push(`"assets.maxGlbTriangles" must be a finite non-negative number, got ${JSON.stringify(a.maxGlbTriangles)}`);
+      }
+      if (a.requireRigCheck !== undefined && typeof a.requireRigCheck !== 'boolean') {
+        problems.push(`"assets.requireRigCheck" must be a boolean, got ${JSON.stringify(a.requireRigCheck)}`);
+      }
+    }
+  }
+
+  return problems;
+}
+
 /** Load `<gameDir>/budgets.json`, falling back to DEFAULT_BUDGETS key-by-key. */
 export async function loadBudgets(gameDir) {
   let declared = {};
@@ -48,6 +126,13 @@ export async function loadBudgets(gameDir) {
     declared = JSON.parse(raw);
   } catch (err) {
     if (err.code !== 'ENOENT') throw new Error(`budgets.json is present but invalid JSON: ${err.message}`);
+  }
+  if (declared === null || typeof declared !== 'object' || Array.isArray(declared)) {
+    throw new Error(`budgets.json must contain a JSON object, got ${JSON.stringify(declared)}`);
+  }
+  const problems = validateBudgets(declared);
+  if (problems.length > 0) {
+    throw new Error(`budgets.json failed validation (${problems.length} problem(s)):\n  - ${problems.join('\n  - ')}`);
   }
   return {
     ...DEFAULT_BUDGETS,

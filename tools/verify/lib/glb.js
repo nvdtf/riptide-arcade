@@ -83,7 +83,15 @@ function primitiveTriangles(primitive, accessors) {
     if (!acc) throw new Error(`POSITION accessor ${posIdx} missing`);
     vertexCount = acc.count;
   }
-  if (mode === 4) return vertexCount / 3;
+  if (mode === 4) {
+    // Fix round (A14): an unfloored division silently produced a fractional
+    // triangle count for a malformed accessor (vertexCount not a multiple of
+    // 3). FAIL loudly instead of shipping a fractional count.
+    if (vertexCount % 3 !== 0) {
+      throw new Error(`primitive mode 4 (TRIANGLES) has vertexCount ${vertexCount}, which is not a multiple of 3 (malformed accessor)`);
+    }
+    return vertexCount / 3;
+  }
   if (mode === 5 || mode === 6) return Math.max(0, vertexCount - 2);
   return 0;
 }

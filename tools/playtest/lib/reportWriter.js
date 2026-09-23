@@ -131,6 +131,7 @@ FPS below is from the exploratory session's real-time rAF timestamps only:
 - avg fps: ${exploratory.fps.avgFps ?? 'n/a'}
 - min fps: ${exploratory.fps.minFps ?? 'n/a'}
 - max fps: ${exploratory.fps.maxFps ?? 'n/a'}
+- sample series: ${exploratory.fps.series ? `${exploratory.fps.series.length} point(s) in \`report.json\` (\`exploratory.fps.series\`, downsampled from ${exploratory.fps.seriesSampleCount ?? exploratory.fps.series.length} raw rAF-delta samples)` : 'n/a'}
 
 ### Screenshots
 

@@ -44,9 +44,9 @@ Serve the repo with any static file server and open
 | fact | value |
 |---|---|
 | entry file | `index.html` |
-| idle run: PLAYING → GAME_OVER, no input at all | **1050–1060 ticks** (seeds 1, 2, 7, 12345, 99999 measured: 1060 / 1055 / 1050 / 1055 / 1050) |
-| fastest route to GAME_OVER | tap `primary` whenever `snapshot().serveTimer > 0` → **883 ticks** (seed 1); three missed descents is the floor |
-| state at tick 600 of an idle run | `PLAYING`, `lives: 2`, `errors: []` — deliberately far from GAME_OVER so `smoke.js`'s 600-tick assertion is never ambiguous |
+| idle run: PLAYING → GAME_OVER, no input at all | **1020–1075 ticks** (measured across 300 seeds — fix round A11 corrected this from the previously documented 1050–1060, which undershot the measured max of 1075) |
+| fastest route to GAME_OVER | tap `primary` whenever `snapshot().serveTimer > 0` → **850–880 ticks** (measured across 40 seeds; seed 1: 880 ticks); three missed descents is the floor |
+| state at tick 600 of an idle run | `PLAYING`, `lives: 2`, `errors: []` — confirmed at all 300 measured seeds; deliberately far from GAME_OVER so `smoke.js`'s 600-tick assertion is never ambiguous |
 | ticks per life | ~60 (serve delay) + ~280–300 (descent) |
 | world | 640 × 480 logical units, letterboxed into the canvas |
 
@@ -66,6 +66,7 @@ fields and everything registered through `__test.expose()`:
   "state": "PLAYING", "tick": 601, "stateTick": 601, "transitions": 2,
   "lastTransition": { "from": "MENU", "to": "PLAYING" },
   "rng": { "seed": 1, "calls": 4 }, "reducedMotion": false,
+  "audio": { "unlocked": false, "context": false, "continuous": false },
   "score": 0, "lives": 2, "hits": 0, "misses": 1,
   "serveTimer": 0, "ticksInPlay": 601,
   "ball": { "x": 418.44, "y": 376.13, "vx": 0.518, "vy": 1.137, "r": 8 },
@@ -84,21 +85,25 @@ round-trips) and contains no non-finite numbers.
 ## `budgets.json` keys
 
 `tools/verify/budget.js` (Order 2) is implemented against exactly these key
-names. Sizes are **bytes**, so no unit is ever ambiguous.
+names. Sizes are **bytes**, so no unit is ever ambiguous. Every key is
+type-checked (fix round C2): a wrong type or an unrecognized key is a `budget`
+FAIL naming exactly what was wrong, never a silent default.
 
 | key | type | value here | meaning |
 |---|---|---|---|
 | `budgetsVersion` | number | `1` | schema version of this file; bump if keys change |
-| `entry` | string | `"index.html"` | the file the tooling loads from this dir |
+| `entry` | string | `"index.html"` | the HTML file every verifier's headless browser loads (via `?test=1`) and the file the budget/size walk treats as this game's entry point; defaults to `index.html` when absent. (`tools/playtest` reads the separate `probe.entry` in `playtest.probe.js`, since a probe may legitimately target a different entry than the verifiers.) |
 | `maxFileBytes` | number | `204800` (200 KB) | no single file in the game dir may exceed this |
 | `maxDirBytes` | number | `512000` (500 KB) | total size of the game dir may not exceed this |
 | `excludeGlobs` | string[] | `["playtest-report/**", "*.map"]` | paths excluded from both checks — the playtest harness writes its report *into* the game dir and must not blow the budget |
+| `progressKeys` | string[] | `["ball", "paddle", "score"]` | consumed by `tools/verify/journey.js` (fix round C3): the snapshot keys that count as proof gameplay itself advanced. When declared, at least one of THESE keys must change across a probe window — a bookkeeping counter that advances unconditionally (e.g. `ticksInPlay`, `serveTimer`) no longer counts by itself. Optional; games that declare none keep the weaker "any non-machine key changed" rule. |
 | `assets.maxGlbFileBytes` | number | `2097152` (2 MB) | per-`.glb` file cap (dormant: this game ships no `assets/`) |
 | `assets.maxGlbTriangles` | number | `50000` | per-model triangle cap read from the GLB JSON chunk (dormant) |
 | `assets.requireRigCheck` | boolean | `true` | each `<asset>.meta.json` must declare a passing rig check (dormant) |
 
-Current usage: `index.html` 46,226 B of 204,800 B (23%), directory 57,758 B of
-512,000 B (11%) — both comfortably inside budget.
+Current usage: `index.html` 46,630 B of 204,800 B (~23%), directory 59,436 B of
+512,000 B (~12%) — both comfortably inside budget (recompute with
+`node tools/verify/budget.js games/fixture-pong` for the exact current bytes).
 
 ## `playtest.probe.js`
 

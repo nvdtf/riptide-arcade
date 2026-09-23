@@ -746,7 +746,13 @@
       transitions: Machine.count(),
       lastTransition: Machine.last(),
       rng: RNG.info(),
-      reducedMotion: Flags.reducedMotion
+      reducedMotion: Flags.reducedMotion,
+      // Fix round (A10): Audio.info() existed but was never in the base
+      // snapshot, so a continuous-audio leak (the hum surviving into a state
+      // that should be silent — the exact bug class RULE 3/updateContinuousAudio
+      // above exists to prevent) was unobservable to any verifier. `continuous`
+      // is the field that matters: true only while PLAYING wants the hum.
+      audio: Audio.info()
     };
     var merged = base;
     var contributions = [Game.snapshot()].concat(exposers.map(function (fn) {

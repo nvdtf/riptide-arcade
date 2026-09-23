@@ -81,7 +81,11 @@ the laser-hold mechanic must feel equally immediate on a touchscreen.
 - **Controls (input actions, mapped per the template's input layer):**
   `left`/`right`/`up`/`down` — thrust the ship (8-directional, normalized);
   `primary` (Space / tap-and-hold) — fire the mining laser at the nearest
-  reticle-locked asteroid; `pause` (Esc / two-finger tap) — toggle `PAUSED`.
+  reticle-locked asteroid; `pause` (Esc) — toggle `PAUSED`. (Keyboard only —
+  the template's input layer has no multi-touch path to `pause`; see
+  `templates/base-game.html`'s INPUT section. A mobile pause control, if this
+  game needs one, means adding an on-screen button that calls `Input.set`,
+  not assuming a gesture the template does not map.)
 - **Win condition:** cargo hold reaches 10 ore before hull integrity or the
   90-second clock runs out.
 - **Lose conditions:** hull integrity reaches 0, or the clock runs out with
@@ -99,9 +103,19 @@ the laser-hold mechanic must feel equally immediate on a touchscreen.
   ```
 
   Both `GAME_OVER` and `WIN` restart identically (full reset — score, hull,
-  cargo, ship/asteroid positions, tick counters); `journey.js`'s "state
-  changed and gameplay advanced" check applies to the `WIN` transition
-  exactly as it does to `GAME_OVER`.
+  cargo, ship/asteroid positions, tick counters). **`journey.js` itself does
+  NOT know about `WIN`** — it walks the template's base graph only
+  (`MENU → PLAYING → PAUSED → PLAYING → GAME_OVER → PLAYING`) and hard-codes
+  that path; it has no way to discover or exercise an extended state a game
+  adds. Proving the `WIN` transition behaves like `GAME_OVER` (state changed,
+  gameplay actually advanced, restart fully resets) is this game's own
+  responsibility, via a game-specific probe in `playtest.probe.js` and/or a
+  `tests/regression/` test — see §5. The extension itself is added entirely
+  inside `templates/base-game.html`'s `GAME CODE — EDIT BELOW …
+  GAME CODE — EDIT ABOVE` fence (the `STATES` array, the transition(s) into
+  and out of `WIN`, and any snapshot fields `WIN` needs) — never above it,
+  since everything above that fence is the shared substrate every verifier
+  assumes is unmodified.
 
 ---
 
@@ -120,7 +134,9 @@ the laser-hold mechanic must feel equally immediate on a touchscreen.
 >   GLB's own JSON chunk within `max(1, ceil(parsed * 0.01))` — exact, or
 >   within 1%, whichever tolerance is looser.
 > - Triangles are counted from the JSON chunk only, per primitive: mode `4`
->   (TRIANGLES) → `vertexCount / 3`; modes `5`/`6` (STRIP/FAN) →
+>   (TRIANGLES) → `vertexCount / 3` (the verifier FAILS loudly instead of
+>   truncating if `vertexCount` is not a multiple of 3 — a malformed
+>   accessor, not a real triangle count); modes `5`/`6` (STRIP/FAN) →
 >   `vertexCount - 2`; every other mode contributes `0`.
 > - `provenance` must be an object (tool / prompt / model — however the asset
 >   was produced; hand-modeled counts too, just say so).

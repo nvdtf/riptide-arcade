@@ -113,7 +113,10 @@ instructions" — left as explicit placeholders for the human reviewing the PR).
    `games/fixture-pong/playtest.probe.js` for the step grammar and a
    reference interpreter) and `games/<name>/budgets.json` (see
    `games/fixture-pong/budgets.json` for the key names `tools/verify/budget.js`
-   reads; omitted keys fall back to the tool's defaults).
+   reads and `tools/verify/journey.js` reads (`progressKeys`); omitted keys
+   fall back to the tool's defaults; every declared key is type-checked —
+   a misspelled or mistyped key is a `budget` FAIL naming it, never a silent
+   default).
 5. Write the game's spec from [`docs/spec-template.md`](docs/spec-template.md)
    before or alongside the implementation.
 
@@ -144,14 +147,19 @@ a worked example.
 ## CI
 
 [`.github/workflows/verify.yml`](.github/workflows/verify.yml) — one job,
-`verify`, triggered on every `pull_request` (any base) and on `push` to
-`main`. `permissions: contents: read` — fork PRs run with no secrets. Steps,
-in order: checkout → setup Node → `npm ci` → cache Playwright's Chromium
-download → install Chromium → discover game directories (all vs. changed,
-diffed against the PR base or the previous push) → verify every game
-directory → run the regression suite → playtest every **changed** game
-directory → upload one `playtest-reports` artifact bundling every changed
-game's report as a subfolder. Budgeted to finish under 5 minutes.
+`verify`, triggered on every `pull_request` (any base), on `push` to `main`,
+and on demand via `workflow_dispatch`. `permissions: contents: read` — fork
+PRs run with no secrets. Steps, in order: checkout → **regression suite
+shrink check** (fails if any `tests/regression/*.test.js` present on the base
+commit is missing from HEAD — see [the regression rule](#the-regression-rule))
+→ setup Node → `npm ci` → cache Playwright's Chromium download → install
+Chromium → discover game directories (all vs. changed, diffed against the PR
+base or the previous push; a change under `templates/` or `tools/` counts as
+"every game dir changed", since either can affect every game) → verify every
+game directory → run the regression suite → playtest every changed game
+directory (`if: always()`, so a verify failure does not suppress the report a
+reviewer most wants) → upload one `playtest-reports` artifact bundling every
+changed game's report as a subfolder. Budgeted to finish under 5 minutes.
 
 ## `games/fixture-pong/`
 

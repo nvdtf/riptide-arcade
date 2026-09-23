@@ -64,3 +64,12 @@ behaviour (e.g. temporarily comment out the fix in a **scratch copy** of the
 game, run the test, confirm it fails with a clear message, then discard the
 scratch copy — never commit the break). A regression test that would pass
 either way is not testing anything.
+
+### "Never shrinks" is enforced, not just stated
+
+CI (`.github/workflows/verify.yml`) fails the build if any `*.test.js` file
+present in this directory on the PR's base branch is missing from the head,
+so deleting a regression test is a CI failure, not a silent pass; if the game
+a test exercises is ever removed from `games/`, its regression test file
+stays and is updated to note the game's removal rather than being deleted,
+so the record of every bug this factory has shipped and fixed stays intact.

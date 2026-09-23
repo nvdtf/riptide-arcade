@@ -147,3 +147,97 @@ test('budget.js: a file over maxFileBytes fails when NOT excluded', async () => 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --- Fix round C2: budgets.json is now type-checked. A type slip used to
+// silently disable the budget it appeared in (never a FAIL); it must now be
+// a FAIL naming the offending key. Each case below is the exact mutant class
+// the reviewer proved against games/fixture-pong ("globstr", "strbudget", a
+// misspelled key) reproduced against a scratch dir.
+
+test('budget.js (C2/"globstr"): excludeGlobs as a STRING (not array) fails validation, naming the key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    // A big file that a working excludeGlobs=["playtest-report/**"] would NOT
+    // exclude — proving this isn't accidentally passing for an unrelated reason.
+    await writeFile(join(dir, 'index.html'), 'x'.repeat(50000));
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 1500,
+      excludeGlobs: 'playtest-report/**' // BUG: a string, not an array — iterated char-by-char pre-fix
+    }));
+    await assert.rejects(() => checkBudgets(dir), /"excludeGlobs" must be an array of strings/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (C2/"strbudget"): maxFileBytes as a STRING ("20KB") fails validation, naming the key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), 'x'.repeat(47000)); // ~46KB: `size > "20KB"` is NaN, never trips, pre-fix
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: '20KB', maxDirBytes: 512000, excludeGlobs: []
+    }));
+    await assert.rejects(() => checkBudgets(dir), /"maxFileBytes" must be a finite non-negative number/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (C2/typo key): a misspelled top-level key (maxFileKB) fails validation instead of being silently ignored', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileKB: 5, maxDirBytes: 512000, excludeGlobs: []
+      // BUG: no valid maxFileBytes at all — pre-fix this silently took the
+      // 200KB default instead of failing, so a game author's "tighten the
+      // budget" change would have no effect and nobody would notice.
+    }));
+    await assert.rejects(() => checkBudgets(dir), /unknown top-level key "maxFileKB"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (C2): an unknown assets.* key fails validation, naming the key', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      assets: { maxGlbTriangls: 100 } // typo'd key
+    }));
+    await assert.rejects(() => checkBudgets(dir), /unknown key "assets\.maxGlbTriangls"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (C2): progressKeys must be an array of strings when present', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      progressKeys: 'ball' // BUG: a string, not an array
+    }));
+    await assert.rejects(() => checkBudgets(dir), /"progressKeys" must be an array of strings/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (C2): a valid budgets.json with progressKeys declared still passes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      progressKeys: ['ball', 'paddle', 'score']
+    }));
+    const { ok, violations } = await checkBudgets(dir);
+    assert.equal(ok, true, `expected pass, got violations: ${JSON.stringify(violations)}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

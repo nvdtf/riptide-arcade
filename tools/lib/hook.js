@@ -67,13 +67,27 @@ export async function gotoGameAndWaitForMenu(page, baseURL, entry, opts = {}) {
   try {
     await hook.waitForReady(timeoutMs);
   } catch {
-    throw new Error(`${entry}: window.__test never attached (__test.ready() stayed false) within ${timeoutMs}ms`);
+    // Fix round (A8): __test (the bridge object) attaches at document parse
+    // time, before the game runtime does — so `window.__test.errors` is
+    // readable even when `ready()` never went true (e.g. the game threw
+    // during boot, before it could call __attach()). Without this, every
+    // verifier reported only "never attached", discarding the real error the
+    // bridge had already captured.
+    const errs = await page.evaluate(() => (window.__test && window.__test.errors) || []).catch(() => []);
+    const errNote = errs.length > 0
+      ? ` — __test.errors captured ${errs.length} entr${errs.length === 1 ? 'y' : 'ies'} before/during boot; first: ${JSON.stringify(errs[0])}`
+      : ' (__test.errors is empty — the game never threw, it simply never called __attach())';
+    throw new Error(`${entry}: window.__test never attached (__test.ready() stayed false) within ${timeoutMs}ms${errNote}`);
   }
   try {
     await hook.waitForState('MENU', timeoutMs);
   } catch {
     const state = await hook.state().catch(() => '<unreadable>');
-    throw new Error(`${entry}: never reached MENU within ${timeoutMs}ms (stuck at "${state}")`);
+    const errs = await page.evaluate(() => (window.__test && window.__test.errors) || []).catch(() => []);
+    const errNote = errs.length > 0
+      ? ` — __test.errors captured ${errs.length} entr${errs.length === 1 ? 'y' : 'ies'}; first: ${JSON.stringify(errs[0])}`
+      : '';
+    throw new Error(`${entry}: never reached MENU within ${timeoutMs}ms (stuck at "${state}")${errNote}`);
   }
   return hook;
 }

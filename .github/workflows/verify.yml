@@ -1,17 +1,20 @@
 name: verify
 
 # On every pull request, and on pushes to the default branch: npm ci, install
-# ONLY Chromium for Playwright, verify + regression on every dir in games/,
-# and playtest on CHANGED game dirs, uploading the playtest report(s) as an
-# artifact. Must work for a PR from a FORK: no secrets are used, and
-# `permissions` is explicit read-only (the default GITHUB_TOKEN a fork PR run
-# gets is read-only regardless, but we say so here rather than relying on repo
-# settings).
+# ONLY Chromium for Playwright, verify + regression on every dir in `games/`,
+# and playtest on changed game dirs (or every game dir, if the change could
+# affect all of them — see "Discover game directories" below), uploading the
+# playtest report(s) as an artifact. Must work for a PR from a FORK: no
+# secrets are used, and `permissions` is explicit read-only (the default
+# GITHUB_TOKEN a fork PR run gets is read-only regardless, but we say so here
+# rather than relying on repo settings). `workflow_dispatch` (fix round C1)
+# lets this run on demand, independent of a push/PR event.
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -37,6 +40,32 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
+
+      # Fix round (A9): "the suite never shrinks" was stated in
+      # tests/regression/README.md but unenforced — deleting the only test
+      # left `npm run regression` green. This is pure git, no dependencies
+      # needed yet, so it runs first and cheaply.
+      - name: Regression suite must never shrink
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "no resolvable base commit (first push / manual dispatch / new branch) — nothing to compare against, skipping"
+            exit 0
+          fi
+          BEFORE=$(git ls-tree -r --name-only "$BASE" -- tests/regression 2>/dev/null | grep '\.test\.js$' || true)
+          AFTER=$(git ls-tree -r --name-only HEAD -- tests/regression 2>/dev/null | grep '\.test\.js$' || true)
+          MISSING=$(comm -23 <(echo "$BEFORE" | sort -u) <(echo "$AFTER" | sort -u) | sed '/^$/d' || true)
+          if [ -n "$MISSING" ]; then
+            echo "regression suite SHRANK — these test file(s) existed on the base commit ($BASE) but are missing from HEAD:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "regression suite did not shrink ($(echo "$AFTER" | sed '/^$/d' | wc -l) test file(s) present, base $BASE)"
 
       - name: npm ci
         run: npm ci
@@ -74,8 +103,20 @@ jobs:
           fi
           if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
             CHANGED_JSON="$ALL_JSON"
+            echo "no resolvable base commit — treating every game dir as changed"
           else
-            CHANGED_JSON=$(git diff --name-only "$BASE" "${{ github.sha }}" -- games/ | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            CHANGED_FILES=$(git diff --name-only "$BASE" "${{ github.sha }}")
+            # Fix round (A13b): a PR that only touches templates/ or tools/
+            # changes the SUBSTRATE every game is built on / verified through —
+            # treat that as "all game dirs changed" rather than playtesting
+            # nothing (the previous behaviour, since such a PR touches no path
+            # under games/ at all).
+            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/)'; then
+              CHANGED_JSON="$ALL_JSON"
+              echo "templates/ or tools/ changed — treating every game dir as changed"
+            else
+              CHANGED_JSON=$(echo "$CHANGED_FILES" | { grep '^games/' || true; } | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            fi
           fi
           echo "changed=$CHANGED_JSON" >> "$GITHUB_OUTPUT"
           echo "changed game dirs: $CHANGED_JSON"
@@ -97,10 +138,23 @@ jobs:
       - name: Regression suite
         run: npm run regression
 
+      # Fix round (A13a): this used to have no `if:`, so it was SKIPPED
+      # whenever the verify step above failed — exactly when a reviewer most
+      # wants the playtest report attached. `if: always()` (short of a
+      # cancelled run) makes it run regardless, using the same env: pattern
+      # as the interpolation fix below (A12).
       - name: Playtest changed game dirs
+        if: always()
+        env:
+          CHANGED_JSON: ${{ steps.games.outputs.changed }}
         run: |
           FAILED=0
-          CHANGED=$(echo '${{ steps.games.outputs.changed }}' | jq -r '.[]')
+          # Fix round (A12): the changed-dirs JSON is PR-controlled (it comes
+          # from directory names an attacker can choose). Piping it through
+          # `env:` and reading "$CHANGED_JSON" here avoids ever interpolating
+          # it directly into the shell command line the way
+          # `echo '${{ ... }}'` used to.
+          CHANGED=$(echo "$CHANGED_JSON" | jq -r '.[]')
           for name in $CHANGED; do
             [ -z "$name" ] && continue
             [ -d "games/$name" ] || continue

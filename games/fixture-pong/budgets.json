@@ -7,6 +7,7 @@
     "playtest-report/**",
     "*.map"
   ],
+  "progressKeys": ["ball", "paddle", "score"],
   "assets": {
     "maxGlbFileBytes": 2097152,
     "maxGlbTriangles": 50000,

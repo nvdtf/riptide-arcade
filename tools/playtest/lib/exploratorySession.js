@@ -27,11 +27,25 @@ export async function runExploratorySession({ page, hook, seed, maxWallMs = 1000
 
   // A real player's first move is almost always "press something to start" —
   // MENU -> PLAYING is universally `primary` in this repo's template.
+  // Fix round (A4): capture the state BEFORE the start press (the true
+  // "segment start") so the caller can record it as `startState`, then
+  // capture the state AFTER the press and — if it already differs, which is
+  // likely since this segment runs real-time — emit an explicit transition
+  // screenshot/event for it. Previously the caller's `startState` was taken
+  // before the press but the loop's own `lastState` was seeded AFTER the
+  // press with no transition event recorded for the gap in between, so
+  // report.json's state sequence could read "MENU -> PAUSED" (skipping the
+  // MENU -> PLAYING edge that actually happened).
+  const preStartState = await hook.state();
   await hook.input('primary', true);
   await page.waitForTimeout(80);
   await hook.input('primary', false);
 
   let lastState = await hook.state();
+  if (lastState !== preStartState) {
+    const file = await captureScreenshot(page, screenshotDir, `exploratory-transition-${preStartState}-to-${lastState}`);
+    events.push({ type: 'screenshot', file, reason: 'transition', from: preStartState, to: lastState });
+  }
   const startShot = await captureScreenshot(page, screenshotDir, `exploratory-start-${lastState}`);
   events.push({ type: 'screenshot', file: startShot, reason: 'segment-start', state: lastState });
 
