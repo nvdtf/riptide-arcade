@@ -47,18 +47,21 @@ needs the actual browser binary and its OS-level runtime libraries, which
 | command | does | flags | exit codes |
 |---|---|---|---|
 | `npm run verify -- <game-dir>` | runs all four verifiers (smoke, journey, determinism, budget) in-process against `<game-dir>` and prints a PASS/FAIL summary. Each is also runnable standalone: `node tools/verify/{smoke,journey,determinism,budget}.js <game-dir>`. | none | `2` usage error (missing/bad game dir) · `1` one or more verifiers failed · `0` all four passed |
-| `npm run playtest -- <game-dir> [--headed] [--seed=<n>]` | plays the game twice — once via the game dir's own `playtest.probe.js`, once via a bounded exploratory session — and writes `<game-dir>/playtest-report/` (screenshots, `report.json`, `report.md`) | `--headed` runs visible Chromium (default headless); `--seed=<n>` sets the exploratory session's action-mashing PRNG (default random; the seed actually used is always printed so a run can be reproduced) | `2` usage error or missing/invalid `playtest.probe.js` · `1` the game never booted to `MENU`, `__test.errors` was non-empty at the end of either session, or the harness itself threw · `0` otherwise — including when a probe's `expectState` checks mismatch (advisory) or a human hasn't yet filled in the confusion-findings table. Playtest **reports** on quality; it never gates on taste. |
+| `npm run playtest -- <game-dir> [--headed] [--seed=<n>]` | plays the game twice — once via the game dir's own `playtest.probe.js`, once via a bounded exploratory session — and writes `<game-dir>/playtest-report/` (screenshots, `report.json`, `report.md`) | `--headed` runs visible Chromium (default headless); `--seed=<n>` sets the exploratory session's action-mashing PRNG (default random; the seed actually used is always printed so a run can be reproduced) | `2` usage error (no `<game-dir>` argument at all) · `1` missing/invalid `playtest.probe.js`, the game never booted to `MENU`, `__test.errors` was non-empty at the end of either session, or the harness itself threw · `0` otherwise — including when a probe's `expectState` checks mismatch (advisory) or a human hasn't yet filled in the confusion-findings table. Playtest **reports** on quality; it never gates on taste. |
 | `npm run regression` | discovers and runs every `tests/regression/*.test.js` (contract: `export async function run()` returning an array of strings, or throwing), plus `tools/verify/budget.test.js` via `node --test` | none | `1` any failure · `0` otherwise |
 
-Sample output shapes (real runs, not paraphrased):
+Sample output shapes (captured from a real fresh-clone run; exact timings vary
+by machine — the very first `verify` invocation after installing Chromium is
+markedly slower, e.g. `smoke` took ~20s on its cold-start run here vs. under
+1s on every run after):
 
 ```
 $ npm run verify -- games/fixture-pong
 verify: /…/games/fixture-pong
-[PASS] smoke (612ms)
-[PASS] journey (2841ms)
-[PASS] determinism (3987ms)
-[PASS] budget (4ms)
+[PASS] smoke (255ms)
+[PASS] journey (259ms)
+[PASS] determinism (685ms)
+[PASS] budget (3ms)
 
 verify summary:
   [PASS] smoke
@@ -71,9 +74,11 @@ all 4 verifier(s) passed
 ```
 $ npm run regression
 regression: discovered 1 test file(s) in tests/regression/
-[PASS] fixture-pong-restart-resets-state.test.js (1181ms)
-       …
-[PASS] tools/verify/budget.test.js (dormant asset-budget unit tests, via node:test) (114ms)
+[PASS] fixture-pong-restart-resets-state.test.js (3777ms)
+       scored 1 hit(s) / score 1 before losing all lives (400 controlled + 1400 idle ticks)
+       GAME_OVER snapshot: score=1 lives=0 hits=1 misses=3
+       restart snapshot: score=0 lives=3 hits=0 misses=0 ball=(320,160) paddle.x=320
+[PASS] tools/verify/budget.test.js (dormant asset-budget unit tests, via node:test) (124ms)
 
 all 2 regression check(s) passed
 ```
@@ -81,11 +86,11 @@ all 2 regression check(s) passed
 ```
 $ npm run playtest -- games/fixture-pong
 playtest: /…/games/fixture-pong
-exploratory seed: 2847193651 (pass --seed=2847193651 to reproduce the action sequence)
+exploratory seed: 447338492 (pass --seed=447338492 to reproduce the action sequence)
 mode: headless
 scripted session: clean
-exploratory session: clean (59.8 avg fps)
-report written: games/fixture-pong/playtest-report/ (report.json, report.md, N screenshot(s))
+exploratory session: clean (60 avg fps)
+report written: games/fixture-pong/playtest-report/ (report.json, report.md, 16 screenshot(s))
 ```
 
 The playtest report lands in `<game-dir>/playtest-report/` — **git-ignored**,
