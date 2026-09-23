@@ -1,0 +1,123 @@
+name: verify
+
+# On every pull request, and on pushes to the default branch: npm ci, install
+# ONLY Chromium for Playwright, verify + regression on every dir in games/,
+# and playtest on CHANGED game dirs, uploading the playtest report(s) as an
+# artifact. Must work for a PR from a FORK: no secrets are used, and
+# `permissions` is explicit read-only (the default GITHUB_TOKEN a fork PR run
+# gets is read-only regardless, but we say so here rather than relying on repo
+# settings).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the "changed game dirs" diff below has a base to
+          # compare against (a shallow clone can't diff against the PR base).
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: npm ci
+        run: npm ci
+
+      # Cache the downloaded Chromium binary across runs (keyed on the
+      # Playwright version pinned in package-lock.json). `npx playwright
+      # install --with-deps chromium` still runs every time — it also
+      # apt-installs Chromium's runtime libraries, which isn't worth caching —
+      # but it skips the ~180MB browser download on a cache hit.
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium (Playwright) — Chromium ONLY, not all browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Discover game directories
+        id: games
+        run: |
+          set -e
+          ALL_JSON=$(ls -d games/*/ 2>/dev/null | xargs -n1 basename | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "all=$ALL_JSON" >> "$GITHUB_OUTPUT"
+          echo "discovered game dirs: $ALL_JSON"
+
+          # "Changed" game dirs: diff against the PR base on pull_request, or
+          # against the previous commit on a push to main. A brand-new branch
+          # (push.before is all-zeros) or any failure to resolve a base falls
+          # back to treating every game dir as changed, so nothing is missed.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            CHANGED_JSON="$ALL_JSON"
+          else
+            CHANGED_JSON=$(git diff --name-only "$BASE" "${{ github.sha }}" -- games/ | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+          echo "changed=$CHANGED_JSON" >> "$GITHUB_OUTPUT"
+          echo "changed game dirs: $CHANGED_JSON"
+
+      - name: Verify every game dir
+        run: |
+          FAILED=0
+          for dir in games/*/; do
+            name=$(basename "$dir")
+            echo "::group::verify $name"
+            if ! npm run verify -- "games/$name"; then
+              echo "verify FAILED for $name"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAILED
+
+      - name: Regression suite
+        run: npm run regression
+
+      - name: Playtest changed game dirs
+        run: |
+          FAILED=0
+          CHANGED=$(echo '${{ steps.games.outputs.changed }}' | jq -r '.[]')
+          for name in $CHANGED; do
+            [ -z "$name" ] && continue
+            [ -d "games/$name" ] || continue
+            echo "::group::playtest $name"
+            if ! npm run playtest -- "games/$name"; then
+              echo "playtest FAILED for $name"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAILED
+
+      - name: Upload playtest reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playtest-reports
+          path: games/*/playtest-report/
+          if-no-files-found: ignore
+          retention-days: 14
