@@ -86,17 +86,21 @@ round-trips) and contains no non-finite numbers.
 
 `tools/verify/budget.js` (Order 2) is implemented against exactly these key
 names. Sizes are **bytes**, so no unit is ever ambiguous. Every key is
-type-checked (fix round C2): a wrong type or an unrecognized key is a `budget`
-FAIL naming exactly what was wrong, never a silent default.
+type-checked (fix round C2): a wrong type or an unrecognized key is a FAIL
+naming exactly what was wrong, never a silent default — from ALL FOUR
+verifiers (smoke, journey, determinism, budget), since every one of them
+loads and validates `budgets.json` before doing anything else, not just
+`budget.js`.
 
 | key | type | value here | meaning |
 |---|---|---|---|
-| `budgetsVersion` | number | `1` | schema version of this file; bump if keys change |
+| `budgetsVersion` | number | `1` | schema version of this file; must be a version this tool understands — `1` is the only one today — an unrecognized version (e.g. bumping it speculatively) is a FAIL, not a silent accept |
 | `entry` | string | `"index.html"` | the HTML file every verifier's headless browser loads (via `?test=1`) and the file the budget/size walk treats as this game's entry point; defaults to `index.html` when absent. (`tools/playtest` reads the separate `probe.entry` in `playtest.probe.js`, since a probe may legitimately target a different entry than the verifiers.) |
 | `maxFileBytes` | number | `204800` (200 KB) | no single file in the game dir may exceed this |
 | `maxDirBytes` | number | `512000` (500 KB) | total size of the game dir may not exceed this |
 | `excludeGlobs` | string[] | `["playtest-report/**", "*.map"]` | paths excluded from both checks — the playtest harness writes its report *into* the game dir and must not blow the budget |
-| `progressKeys` | string[] | `["ball", "paddle", "score"]` | consumed by `tools/verify/journey.js` (fix round C3): the snapshot keys that count as proof gameplay itself advanced. When declared, at least one of THESE keys must change across a probe window — a bookkeeping counter that advances unconditionally (e.g. `ticksInPlay`, `serveTimer`) no longer counts by itself. Optional; games that declare none keep the weaker "any non-machine key changed" rule. |
+| `progressKeys` | string[] | `["ball", "paddle", "score"]` | **expected practice, not optional** (see `README.md` / `docs/spec-template.md` §7) — consumed by `tools/verify/journey.js`: the top-level snapshot keys that count as proof gameplay itself advanced. When declared, at least one of THESE keys must change across a probe window — a bookkeeping counter that advances unconditionally (e.g. `ticksInPlay`, `serveTimer`) no longer counts by itself. Each declared key is itself validated (fix round N2/R1) against the UNION of a MENU snapshot and the first PLAYING snapshot — `ball` here is present in both, but a key that only exists once PLAYING begins (a spawned entity) is equally valid and does not need to appear in MENU too; a typo, a nested path (only top-level keys are diffed), or one of journey.js's own machine-bookkeeping fields (`tick`, `state`, ...) is a FAIL naming the bad declaration, not the game. Declaring none falls back to the weaker "any non-machine key changed" rule and prints a WARNING. |
+| `notes` | string | *(not set)* | the one free-form, documented escape hatch for human prose on a `budgets.json` (e.g. explaining why a budget was raised); any OTHER unrecognised key (a typo, `_comment`, anything not in this schema) is still a hard FAIL |
 | `assets.maxGlbFileBytes` | number | `2097152` (2 MB) | per-`.glb` file cap (dormant: this game ships no `assets/`) |
 | `assets.maxGlbTriangles` | number | `50000` | per-model triangle cap read from the GLB JSON chunk (dormant) |
 | `assets.requireRigCheck` | boolean | `true` | each `<asset>.meta.json` must declare a passing rig check (dormant) |

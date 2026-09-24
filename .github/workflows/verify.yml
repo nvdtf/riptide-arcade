@@ -70,6 +70,31 @@ jobs:
       - name: npm ci
         run: npm ci
 
+      # Fix round (R2): tools/ci-checks/scan-run-blocks.js existed but was
+      # never invoked by anything — not this workflow, not `npm run
+      # regression`, not a package script — so it protected nothing. It now
+      # runs here (also wired into `npm run regression`, see tests/regression
+      # /run.js, for local/pre-push coverage). Runs early, right after `npm
+      # ci` and before the ~180MB Chromium download, so a bad workflow file
+      # fails fast and cheaply.
+      #
+      # actionlint is the real, complete GitHub Actions expression/schema
+      # checker (tools/ci-checks/scan-run-blocks.js is deliberately a much
+      # narrower, dependency-free tripwire for this repo's specific X1 bug
+      # class); it is installed here from a PINNED release tag (not
+      # "latest"), so this step cannot start failing — or silently start
+      # passing something it used to catch — out from under us when a new
+      # actionlint version ships. The download is a single ~2MB tarball from
+      # GitHub's own release CDN and takes well under a second in testing;
+      # running both this scanner and actionlint costs a few seconds total
+      # and catches strictly more than either alone would.
+      - name: Lint GitHub Actions workflows (X1 regression guard)
+        run: |
+          set -e
+          node tools/ci-checks/scan-run-blocks.js .github/workflows/*.yml
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash | bash -s -- 1.7.12
+          ./actionlint .github/workflows/*.yml
+
       # Cache the downloaded Chromium binary across runs (keyed on the
       # Playwright version pinned in package-lock.json). `npx playwright
       # install --with-deps chromium` still runs every time — it also
@@ -118,9 +143,14 @@ jobs:
             # against) affect every game exactly the same way templates/ and
             # tools/ do — they were missing from this check entirely, so a
             # change to any of them playtested nothing.
-            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/|tests/|package\.json$|package-lock\.json$)'; then
+            # Fix round (R9): .github/workflows/ was missing from this check
+            # too — a workflow-only PR (e.g. editing this very file) touches
+            # no path under games/ either, so it playtested nothing under the
+            # old rule despite being exactly the kind of change (CI behaviour
+            # itself) every game is implicitly judged through.
+            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/|tests/|\.github/workflows/|package\.json$|package-lock\.json$)'; then
               CHANGED_JSON="$ALL_JSON"
-              echo "templates/, tools/, tests/, package.json or package-lock.json changed — treating every game dir as changed"
+              echo "templates/, tools/, tests/, .github/workflows/, package.json or package-lock.json changed — treating every game dir as changed"
             else
               CHANGED_JSON=$(echo "$CHANGED_FILES" | { grep '^games/' || true; } | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
             fi

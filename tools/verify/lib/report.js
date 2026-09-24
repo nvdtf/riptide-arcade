@@ -42,7 +42,19 @@ export async function runNamed(name, fn, { timeoutMs = DEFAULT_DEADLINE_MS } = {
     timer = setTimeout(() => {
       reject(new Error(`${name} exceeded its ${timeoutMs}ms deadline — the verifier appears to be hung (e.g. an infinite loop reachable from __test.tick()/evaluate()); failing instead of hanging the job`));
     }, timeoutMs);
-    timer.unref?.(); // never keep the process alive on its own
+    // Fix round (R7): this used to call `timer.unref?.()` ("never keep the
+    // process alive on its own"). That is backwards for a deadline whose one
+    // job is to fire even when everything else has gone quiet: an unref'd
+    // timer does not keep the event loop alive, so if it is the ONLY
+    // remaining handle, Node simply exits — silently, with the process's
+    // default exit code (0 here, since nothing ever threw) — turning a hang
+    // into a false PASS instead of the FAIL this deadline exists to produce.
+    // It was unreachable in practice only because Playwright always holds
+    // its own handles open; nothing here should depend on that coincidence.
+    // Removed, matching the playtest harness's own overall deadline
+    // (tools/playtest/index.js, N4), which was already never unref'd.
+    // `clearTimeout` in `finally` below already prevents this timer from
+    // dangling once `fn()` settles first.
   });
   try {
     const details = await Promise.race([fn(), deadline]);

@@ -45,8 +45,18 @@
 //   N7 — the probe replay (twice, per run) was writing screenshots into a
 //   temp directory that was discarded, unread, immediately after — the sole
 //   consumer of a probe replay here is the final snapshot. Screenshot capture
-//   is now skippable (`screenshotDir: null`), cutting most of the ~10s this
-//   verifier had grown to.
+//   is now skippable (`screenshotDir: null`), measured at ~0.9s of this
+//   verifier's ~11s total — cutting it out removed real, if modest, cost.
+//   R4 — N6's "name playtest.probe.js first" fix went one step too far: a
+//   probe replay that THROWS because the GAME recorded unexpected
+//   `__test.errors` (as opposed to playtest.probe.js's own steps/controller()
+//   throwing, or the scripted-session interpreter throwing) named
+//   playtest.probe.js as the primary suspect regardless — sending the author
+//   to the wrong file when the bug was in their own game. runProbeOnce() now
+//   marks that specific case (`isGameSideError`) and the catch in run() names
+//   the GAME first for it, while every other throw here (a genuine
+//   playtest.probe.js/interpreter throw) still names playtest.probe.js first,
+//   unchanged.
 //
 // Individually runnable: `node tools/verify/determinism.js <game-dir>`
 
@@ -79,7 +89,7 @@ function omitKeys(snapshot, keys) {
 async function runScript(gameDir, seed, entry) {
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
-    const hook = await gotoGameAndWaitForMenu(page, baseURL, entry);
+    const hook = await gotoGameAndWaitForMenu(page, baseURL, entry, { gameDir });
     await hook.seed(seed); // reseed while still in MENU, per the __test.seed() contract
 
     await hook.input('primary', true);
@@ -154,15 +164,22 @@ async function loadProbeIfPresent(gameDir) {
  * screenshot capture entirely — this replay only needs the final snapshot,
  * and the screenshots were being written to a scratch directory that was
  * discarded unread immediately after, at real wall-clock cost.
+ *
+ * Fix round (R4): the thrown Error for unexpected `__test.errors` is marked
+ * `isGameSideError` so the caller can tell it apart from a throw in the
+ * replay machinery itself (playtest.probe.js, the scripted-session
+ * interpreter) and attribute blame correctly — see the catch in run() below.
  */
 async function runProbeOnce(gameDir, probe, screenshotDir = null) {
   const entry = probe.entry || 'index.html';
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
-    const hook = await gotoGameAndWaitForMenu(page, baseURL, entry);
+    const hook = await gotoGameAndWaitForMenu(page, baseURL, entry, { gameDir });
     const result = await runScriptedSession({ page, hook, probe, screenshotDir });
     if (result.finalErrors.length > 0) {
-      throw new Error(`unexpected __test.errors during playtest.probe.js replay (seed ${probe.seed}): ${JSON.stringify(result.finalErrors[0])}`);
+      const err = new Error(`unexpected __test.errors during playtest.probe.js replay (seed ${probe.seed}): ${JSON.stringify(result.finalErrors[0])}`);
+      err.isGameSideError = true;
+      throw err;
     }
     return result.finalSnapshot;
   } finally {
@@ -204,9 +221,19 @@ export async function run(gameDir) {
       probeSnap1 = await runProbeOnce(gameDir, probe);
       probeSnap2 = await runProbeOnce(gameDir, probe);
     } catch (e) {
-      // N6: a probe that THROWS during replay (as opposed to merely producing
-      // a mismatched snapshot) used to surface its raw, un-contextualized
-      // message — name playtest.probe.js as the suspect explicitly.
+      // Fix round (R4): a throw here can mean two very different things —
+      // (a) the GAME recorded unexpected __test.errors during the replay
+      // (runProbeOnce marks this `isGameSideError`), which points at the
+      // game's own code, not at playtest.probe.js; or (b) playtest.probe.js
+      // itself threw (a bad steps array, a throwing controller()), an import
+      // failure, or a malformed probe (both handled earlier, in
+      // loadProbeIfPresent) — those genuinely do point at playtest.probe.js
+      // first. N6 originally named playtest.probe.js as the primary suspect
+      // for EVERY throw here, including case (a), which sent the author
+      // looking in the wrong file for a bug that was in their own game.
+      if (e.isGameSideError) {
+        throw new Error(`the GAME recorded unexpected __test.errors during a playtest.probe.js ("${probe.name || 'unnamed'}", seed ${probe.seed}) replay: ${e.message} — treat the GAME's own code as the primary suspect (the error came from the game's own __test.errors, not from playtest.probe.js or the scripted-session interpreter throwing); playtest.probe.js driving an input the game doesn't handle cleanly is still worth a second look, but the game is where this points first`);
+      }
       throw new Error(`playtest.probe.js ("${probe.name || 'unnamed'}", seed ${probe.seed}) threw during determinism replay: ${e.message} — treat playtest.probe.js itself (its steps array, or its controller() function if it has one) as the primary suspect, alongside the scripted-session interpreter it runs through`);
     }
     if (!snapshotsEqual(probeSnap1, probeSnap2)) {

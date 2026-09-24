@@ -245,10 +245,13 @@ file (per `budgets.json`, below) with nothing else running.
 > ("some non-bookkeeping field changed"), which a transient freeze can slip
 > past if any of the game's own counters keeps moving while the simulation
 > itself is frozen. Every game should declare at least one — see the worked
-> example below (`["asteroidPositions","hullIntegrity","oreCount"]`-style
+> example below (`["shipPosition","hullIntegrity","oreCount"]`-style
 > fields, never `tick`/`stateTick`/anything journey.js already treats as
 > machine bookkeeping, and only TOP-LEVEL keys — a nested path like
-> `"ball.x"` is never checked, since only top-level keys are diffed).
+> `"ball.x"` is never checked, since only top-level keys are diffed). A
+> declared key must exist in the MENU snapshot, the first PLAYING snapshot,
+> or both — a key that only appears once play begins (e.g. a spawned
+> entity) is normal game design and does not need to exist in MENU too.
 > `journey.js` prints a one-line WARNING naming this weaker fallback whenever
 > a game declares none.
 >

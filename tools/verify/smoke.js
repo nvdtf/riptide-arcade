@@ -25,7 +25,7 @@ export async function run(gameDir) {
   const budgets = await loadBudgets(gameDir);
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
-    const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry);
+    const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry, { gameDir });
     details.push('reached MENU after load');
 
     const errorsAtMenu = await hook.errors();

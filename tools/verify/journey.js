@@ -25,6 +25,13 @@
 //      gameplay itself advanced. Games that declare no progressKeys keep the
 //      old any-key behaviour (weaker, but not a regression for them).
 //
+// FIX ROUND (R1): N2's progressKeys declaration check (see
+// validateProgressKeys() below) originally validated against the MENU
+// snapshot alone, which false-failed a game that declares a key not present
+// until PLAYING begins (e.g. a spawned entity) — normal game design, not a
+// bad declaration. It now validates against the UNION of the MENU snapshot
+// and the first PLAYING snapshot.
+//
 // Individually runnable: `node tools/verify/journey.js <game-dir>`
 
 import { openGame } from '../lib/browser.js';
@@ -63,19 +70,36 @@ function nonBookkeepingDiff(before, after) {
  * diagnosis. Validate the declaration itself, once, up front, against a real
  * snapshot taken from the game, and fail with a message that says plainly
  * that the DECLARATION is wrong, not the game.
+ *
+ * Fix round (R1): N2's version of this check validated against the MENU
+ * snapshot ALONE. A game may legitimately declare a progressKey that does
+ * not exist until play begins — e.g. `ball: getState() === 'MENU' ?
+ * undefined : {...}`, where `jsonSafe`'s JSON round-trip drops an `undefined`
+ * value entirely, so the key is simply absent from the MENU snapshot's own
+ * key list — and MENU-only validation rejected that as a bad declaration,
+ * false-failing a perfectly normal "entity spawns when play starts" design
+ * and telling the author the wrong thing (the key list it printed did not
+ * even include the key they declared, since it too came from MENU alone).
+ * Validate against the UNION of the MENU snapshot and the first PLAYING
+ * snapshot instead — a key must exist in at least one of the two — which
+ * still catches a typo, a nested path, or a bookkeeping field exactly as
+ * before (none of those become valid just because a game reaches PLAYING).
  * @param {string[]} progressKeys
- * @param {object} sampleSnapshot a real `__test.snapshot()` taken from this game
+ * @param {object} menuSnapshot a real `__test.snapshot()` taken while in MENU
+ * @param {object} playingSnapshot a real `__test.snapshot()` taken while in PLAYING
  */
-function validateProgressKeys(progressKeys, sampleSnapshot) {
+function validateProgressKeys(progressKeys, menuSnapshot, playingSnapshot) {
   if (!progressKeys || progressKeys.length === 0) return;
-  const topLevelKeys = Object.keys(sampleSnapshot || {});
-  const topLevelKeySet = new Set(topLevelKeys);
+  const menuKeys = Object.keys(menuSnapshot || {});
+  const playingKeys = Object.keys(playingSnapshot || {});
+  const topLevelKeySet = new Set([...menuKeys, ...playingKeys]);
+  const topLevelKeys = [...topLevelKeySet].sort();
   const problems = [];
   for (const key of progressKeys) {
     if (MACHINE_BOOKKEEPING_FIELDS.includes(key)) {
       problems.push(`"${key}" is one of journey.js's own machine-bookkeeping fields (${JSON.stringify(MACHINE_BOOKKEEPING_FIELDS)}), which are always filtered out of the gameplay diff before progressKeys is even consulted — declaring it can never prove or disprove progress; remove it or replace it with a real gameplay field`);
     } else if (!topLevelKeySet.has(key)) {
-      problems.push(`"${key}" is not a top-level key of this game's snapshot (top-level keys are: ${JSON.stringify(topLevelKeys)}) — only TOP-LEVEL keys are ever diffed (diffKeys() does not descend into nested objects), so a nested path like "ball.x" will never match; did you mean a top-level key such as "ball"? Also check for a plain typo.`);
+      problems.push(`"${key}" is not a top-level key of this game's snapshot in MENU or PLAYING (top-level keys seen across both: ${JSON.stringify(topLevelKeys)}) — only TOP-LEVEL keys are ever diffed (diffKeys() does not descend into nested objects), so a nested path like "ball.x" will never match; did you mean a top-level key such as "ball"? Also check for a plain typo. (A key that appears only once PLAYING begins — e.g. a spawned entity — is fine and does not need to exist in MENU.)`);
     }
   }
   if (problems.length > 0) {
@@ -147,15 +171,11 @@ export async function run(gameDir) {
   const progressKeys = Array.isArray(budgets.progressKeys) ? budgets.progressKeys : [];
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
-    const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry);
+    const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry, { gameDir });
     await assertState(hook, 'MENU', 'initial load');
     details.push('MENU reached after load');
 
-    // N2: validate the declaration itself, once, up front, against a real
-    // snapshot from this game — before it is ever relied on to prove/disprove
-    // progress in a probe below.
-    const sampleSnapshot = await hook.snapshot();
-    validateProgressKeys(progressKeys, sampleSnapshot);
+    const menuSnapshot = await hook.snapshot();
 
     if (progressKeys.length > 0) {
       details.push(`progressKeys declared: ${JSON.stringify(progressKeys)} — at least one MUST change to prove gameplay advanced`);
@@ -176,6 +196,15 @@ export async function run(gameDir) {
     await hook.tick(1);
     await hook.input('primary', false);
     await assertState(hook, 'PLAYING', 'MENU -> PLAYING');
+
+    // N2 / R1: validate the declaration itself, once, up front, against the
+    // UNION of the MENU snapshot and this first real PLAYING snapshot —
+    // before progressKeys is ever relied on to prove/disprove progress in a
+    // probe below. See validateProgressKeys()'s own header for why the union
+    // (not MENU alone) is the correct check.
+    const firstPlayingSnapshot = await hook.snapshot();
+    validateProgressKeys(progressKeys, menuSnapshot, firstPlayingSnapshot);
+
     const advance1 = await assertAdvances(hook, 'PLAYING after start', progressKeys);
     details.push(`MENU -> PLAYING: state changed and gameplay advanced (fields: ${advance1.join(', ')})`);
 

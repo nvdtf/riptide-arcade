@@ -57,12 +57,24 @@ export function hookFor(page) {
  * @param {import('playwright').Page} page
  * @param {string} baseURL e.g. from serveDir()
  * @param {string} entry e.g. 'index.html'
- * @param {{ timeoutMs?: number, extraQuery?: string }} [opts]
+ * @param {{ timeoutMs?: number, extraQuery?: string, gameDir?: string }} [opts]
  */
 export async function gotoGameAndWaitForMenu(page, baseURL, entry, opts = {}) {
-  const { timeoutMs = 10000, extraQuery = '' } = opts;
+  const { timeoutMs = 10000, extraQuery = '', gameDir } = opts;
+  const gameLabel = gameDir ? `${gameDir} (${entry})` : entry;
   const url = `${baseURL}${entry}?test=1${extraQuery ? '&' + extraQuery : ''}`;
-  await page.goto(url, { waitUntil: 'load', timeout: timeoutMs });
+  try {
+    await page.goto(url, { waitUntil: 'load', timeout: timeoutMs });
+  } catch (e) {
+    // Fix round (R8): an inline boot script that loops forever synchronously
+    // (before the page's `load` event can ever fire) used to surface as a
+    // raw Playwright `page.goto: Timeout ...ms exceeded` — no mention of
+    // which game dir, and Playwright's own message includes ANSI colour
+    // escapes that are unreadable outside a terminal (e.g. in a CI log
+    // viewer or this error re-thrown elsewhere). Wrap it in a message that
+    // says plainly what actually happened and names the game dir.
+    throw new Error(`${gameLabel}: the page never finished loading within ${timeoutMs}ms — the game's boot script likely never yielded (e.g. a synchronous infinite loop before the 'load' event), so Playwright's own navigation timeout fired first. Original error: ${e.message.replace(/\x1b\[[0-9;]*m/g, '')}`);
+  }
   const hook = hookFor(page);
   try {
     await hook.waitForReady(timeoutMs);
@@ -77,7 +89,7 @@ export async function gotoGameAndWaitForMenu(page, baseURL, entry, opts = {}) {
     const errNote = errs.length > 0
       ? ` — __test.errors captured ${errs.length} entr${errs.length === 1 ? 'y' : 'ies'} before/during boot; first: ${JSON.stringify(errs[0])}`
       : ' (__test.errors is empty — the game never threw, it simply never called __attach())';
-    throw new Error(`${entry}: window.__test never attached (__test.ready() stayed false) within ${timeoutMs}ms${errNote}`);
+    throw new Error(`${gameLabel}: window.__test never attached (__test.ready() stayed false) within ${timeoutMs}ms${errNote}`);
   }
   try {
     await hook.waitForState('MENU', timeoutMs);
@@ -87,7 +99,7 @@ export async function gotoGameAndWaitForMenu(page, baseURL, entry, opts = {}) {
     const errNote = errs.length > 0
       ? ` — __test.errors captured ${errs.length} entr${errs.length === 1 ? 'y' : 'ies'}; first: ${JSON.stringify(errs[0])}`
       : '';
-    throw new Error(`${entry}: never reached MENU within ${timeoutMs}ms (stuck at "${state}")${errNote}`);
+    throw new Error(`${gameLabel}: never reached MENU within ${timeoutMs}ms (stuck at "${state}")${errNote}`);
   }
   return hook;
 }

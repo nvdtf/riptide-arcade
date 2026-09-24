@@ -133,7 +133,7 @@ async function main() {
       // --- Session 1: scripted probe (ticked, deterministic) ---
       const { page: scriptedPage, close: closeScriptedPage } = await session.newPage();
       try {
-        const hook = await gotoGameAndWaitForMenu(scriptedPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
+        const hook = await gotoGameAndWaitForMenu(scriptedPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS, gameDir });
         const startState = await hook.state();
         const result = await runScriptedSession({ page: scriptedPage, hook, probe, screenshotDir: reportDir });
         scripted = { ...result, startState, probeName: probe.name, probeDescription: probe.description, seed: probe.seed };
@@ -146,7 +146,7 @@ async function main() {
       const { page: exploratoryPage, close: closeExploratoryPage } = await session.newPage();
       try {
         await installFrameRecorder(exploratoryPage); // must be installed before goto
-        const hook = await gotoGameAndWaitForMenu(exploratoryPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
+        const hook = await gotoGameAndWaitForMenu(exploratoryPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS, gameDir });
         const startState = await hook.state();
         const result = await runExploratorySession({ page: exploratoryPage, hook, seed, maxWallMs: EXPLORATORY_DURATION_MS, screenshotDir: reportDir });
         exploratory = { ...result, startState, requestedDurationMs: EXPLORATORY_DURATION_MS };
