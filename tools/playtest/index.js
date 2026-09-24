@@ -50,12 +50,24 @@ const BOOT_TIMEOUT_MS = 10000;
 // sessions plus report writing), not any single verifier.
 const PLAYTEST_DEADLINE_MS = 120000;
 
-/** Race `promise` against a `ms` timeout; rejects with a clear message on timeout, never leaves a dangling timer. */
+/**
+ * Race `promise` against a `ms` timeout; rejects with a clear message on
+ * timeout, never leaves a dangling timer (always cleared in `finally`).
+ *
+ * Deliberately does NOT `.unref()` the deadline timer (unlike the verifiers'
+ * per-verifier deadline in tools/verify/lib/report.js, which this fix round
+ * leaves untouched): the entire point of an overall deadline is to guarantee
+ * the process exits even when NOTHING else is keeping the event loop alive
+ * (an unref'd timer can be starved of its own callback when it is the only
+ * remaining handle, which defeats a "guaranteed" deadline). A live Playwright
+ * session always has open handles of its own regardless, so this makes no
+ * difference in the common case — it only matters in the adversarial one,
+ * which is exactly the case N4 exists for.
+ */
 function withDeadline(promise, ms, message) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(message)), ms);
-    timer.unref?.();
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
