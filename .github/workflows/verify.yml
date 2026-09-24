@@ -88,6 +88,16 @@ jobs:
       # GitHub's own release CDN and takes well under a second in testing;
       # running both this scanner and actionlint costs a few seconds total
       # and catches strictly more than either alone would.
+      #
+      # Fix round (this round): actionlint bundles a shellcheck pass over
+      # every `run:` block, and this GitHub-hosted runner has shellcheck
+      # preinstalled, so that pass is ACTIVE here. It is NOT active on a
+      # developer machine without shellcheck installed — actionlint just
+      # silently skips it, no warning — so a clean local `./actionlint` run
+      # does not prove this step will pass in CI. To reproduce this step
+      # locally, install shellcheck first (`apt-get install -y shellcheck`,
+      # or the `koalaman/shellcheck` static binary) — see the CI section of
+      # README.md.
       - name: Lint GitHub Actions workflows (X1 regression guard)
         run: |
           set -e
@@ -113,7 +123,26 @@ jobs:
         id: games
         run: |
           set -e
-          ALL_JSON=$(ls -d games/*/ 2>/dev/null | xargs -n1 basename | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          # Fix round (this round): the previous version parsed `ls` output
+          # (`ls -d games/*/ | xargs -n1 basename`), which is exactly the shell
+          # anti-pattern shellcheck's SC2011 warns about (filenames from `ls`
+          # aren't safe to hand to another command this way). actionlint bundles
+          # a shellcheck pass over every `run:` block, and the GitHub runner has
+          # it installed, so that pass is ACTIVE in CI even when it is silently
+          # a no-op on a local machine that lacks shellcheck (see the README
+          # note on this job for how to reproduce that locally). Building the
+          # name array with a glob loop instead avoids parsing `ls` output
+          # entirely, so there is nothing left for that check to flag.
+          ALL_NAMES=()
+          for d in games/*/; do
+            [ -d "$d" ] || continue
+            ALL_NAMES+=("$(basename "$d")")
+          done
+          if [ "${#ALL_NAMES[@]}" -eq 0 ]; then
+            ALL_JSON='[]'
+          else
+            ALL_JSON=$(printf '%s\n' "${ALL_NAMES[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
           echo "all=$ALL_JSON" >> "$GITHUB_OUTPUT"
           echo "discovered game dirs: $ALL_JSON"
 

@@ -184,7 +184,12 @@ every game) → verify every game directory → run the regression suite →
 playtest every changed game directory (`if: always()`, so a verify failure
 does not suppress the report a reviewer most wants) → upload one
 `playtest-reports` artifact bundling every changed game's report as a
-subfolder. Budgeted to finish under 5 minutes.
+subfolder. Budgeted to finish under 5 minutes. The "Lint GitHub Actions
+workflows (X1 regression guard)" step's `actionlint` bundles a shellcheck pass
+over every `run:` script that is only active where shellcheck is installed —
+which the GitHub-hosted runner is, silently, so install shellcheck locally too
+(`apt-get install -y shellcheck`, or the `koalaman/shellcheck` static binary)
+before trusting a local `./actionlint .github/workflows/*.yml` run to match CI.
 
 ## `games/fixture-pong/`
 
