@@ -54,15 +54,17 @@ const PLAYTEST_DEADLINE_MS = 120000;
  * Race `promise` against a `ms` timeout; rejects with a clear message on
  * timeout, never leaves a dangling timer (always cleared in `finally`).
  *
- * Deliberately does NOT `.unref()` the deadline timer (unlike the verifiers'
- * per-verifier deadline in tools/verify/lib/report.js, which this fix round
- * leaves untouched): the entire point of an overall deadline is to guarantee
- * the process exits even when NOTHING else is keeping the event loop alive
- * (an unref'd timer can be starved of its own callback when it is the only
- * remaining handle, which defeats a "guaranteed" deadline). A live Playwright
- * session always has open handles of its own regardless, so this makes no
- * difference in the common case — it only matters in the adversarial one,
- * which is exactly the case N4 exists for.
+ * Deliberately does NOT `.unref()` the deadline timer: the entire point of
+ * an overall deadline is to guarantee the process exits even when NOTHING
+ * else is keeping the event loop alive (an unref'd timer can be starved of
+ * its own callback when it is the only remaining handle, which defeats a
+ * "guaranteed" deadline). A live Playwright session always has open handles
+ * of its own regardless, so this makes no difference in the common case —
+ * it only matters in the adversarial one, which is exactly the case N4
+ * exists for. The verifiers' own per-verifier deadline
+ * (`tools/verify/lib/report.js`) used to be unref'd for the opposite (wrong)
+ * reason; fix round R7 removed that too, so both deadlines are consistently
+ * NOT unref'd today — see that file's own R7 note for the full story.
  */
 function withDeadline(promise, ms, message) {
   let timer;

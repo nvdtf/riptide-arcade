@@ -249,9 +249,11 @@ file (per `budgets.json`, below) with nothing else running.
 > fields, never `tick`/`stateTick`/anything journey.js already treats as
 > machine bookkeeping, and only TOP-LEVEL keys — a nested path like
 > `"ball.x"` is never checked, since only top-level keys are diffed). A
-> declared key must exist in the MENU snapshot, the first PLAYING snapshot,
-> or both — a key that only appears once play begins (e.g. a spawned
-> entity) is normal game design and does not need to exist in MENU too.
+> declared key must exist in the MENU snapshot, or in ANY snapshot
+> `journey.js` takes while PLAYING — a key that only materialises at some
+> point once play begins (e.g. a spawned entity, or a counter that only
+> starts moving after some ticks) is normal game design and does not need to
+> exist in MENU, or even in the very first PLAYING snapshot, too.
 > `journey.js` prints a one-line WARNING naming this weaker fallback whenever
 > a game declares none.
 >

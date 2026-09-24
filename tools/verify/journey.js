@@ -32,6 +32,22 @@
 // bad declaration. It now validates against the UNION of the MENU snapshot
 // and the first PLAYING snapshot.
 //
+// FIX ROUND (A1): R1's "first PLAYING snapshot" was still too narrow — it is
+// taken one tick after the MENU -> PLAYING transition, before any probe below
+// has run, so it cannot see a field that only materialises LATER in PLAYING
+// (a wave that spawns after a few seconds, a `bullets` array that only
+// exists once the player fires, a `combo` counter that only appears past
+// some tick threshold). That false-failed a correctly-declared key as an
+// invalid declaration, and the failure message told the author the exact
+// opposite of what was true ("a key that appears only once PLAYING begins is
+// fine" — which is exactly what they'd done). Fixed by validating against
+// the UNION of the MENU snapshot and EVERY snapshot journey already takes
+// during its PLAYING windows — not just the first, but also the `before`/
+// `after` snapshots each assertAdvances() probe takes across its own
+// PROBE_TICKS-tick window — re-checked after every one of those snapshots is
+// captured (see validateProgressKeys()'s own header for why this stays a
+// tight check, not a loophole).
+//
 // Individually runnable: `node tools/verify/journey.js <game-dir>`
 
 import { openGame } from '../lib/browser.js';
@@ -67,9 +83,9 @@ function nonBookkeepingDiff(before, after) {
  * (`"tick"` and the rest of MACHINE_BOOKKEEPING_FIELDS) all silently made
  * progressProven() impossible to satisfy, so journey FAILED on otherwise
  * correct gameplay and reported it as a frozen simulation — the wrong
- * diagnosis. Validate the declaration itself, once, up front, against a real
- * snapshot taken from the game, and fail with a message that says plainly
- * that the DECLARATION is wrong, not the game.
+ * diagnosis. Validate the declaration itself against real snapshots taken
+ * from the game, and fail with a message that says plainly that the
+ * DECLARATION is wrong, not the game.
  *
  * Fix round (R1): N2's version of this check validated against the MENU
  * snapshot ALONE. A game may legitimately declare a progressKey that does
@@ -81,25 +97,45 @@ function nonBookkeepingDiff(before, after) {
  * and telling the author the wrong thing (the key list it printed did not
  * even include the key they declared, since it too came from MENU alone).
  * Validate against the UNION of the MENU snapshot and the first PLAYING
- * snapshot instead — a key must exist in at least one of the two — which
- * still catches a typo, a nested path, or a bookkeeping field exactly as
- * before (none of those become valid just because a game reaches PLAYING).
+ * snapshot instead — a key must exist in at least one of the two.
+ *
+ * Fix round (A1): R1's "first PLAYING snapshot" is taken one tick after the
+ * MENU -> PLAYING transition — before assertAdvances()'s own probe has run
+ * any of its PROBE_TICKS (120) ticks. A key that only materialises LATER in
+ * that PLAYING window (e.g. `combo: ticksInPlay > 30 ? n : undefined`, a
+ * wave that spawns a few seconds in, a `bullets` array that only exists
+ * once the player fires) was still absent from every snapshot this check
+ * had seen, so it false-failed exactly the same way R1 was meant to fix —
+ * and the message then told the author "a key that appears only once
+ * PLAYING begins is fine", which is precisely what they'd done. Fixed by
+ * validating against the UNION of the MENU snapshot and EVERY snapshot
+ * journey has ALREADY taken so far during PLAYING — not just the first, but
+ * also every `before`/`after` snapshot each assertAdvances() probe takes —
+ * re-checked after each new one is captured, before that probe's own
+ * progressProven() decision. Those `before`/`after` snapshots were already
+ * being taken for the freeze-detection probe itself, so folding them into
+ * this union costs nothing extra. A typo, a nested path, or a bookkeeping
+ * field are never real top-level keys of ANY snapshot the game ever
+ * produces, so they are still caught exactly as before — a key only
+ * "becomes valid" by actually appearing somewhere real, never merely by the
+ * clock advancing.
  * @param {string[]} progressKeys
- * @param {object} menuSnapshot a real `__test.snapshot()` taken while in MENU
- * @param {object} playingSnapshot a real `__test.snapshot()` taken while in PLAYING
+ * @param {object[]} snapshots every real `__test.snapshot()` taken so far — the
+ *   MENU snapshot plus every snapshot taken during a PLAYING window to date
  */
-function validateProgressKeys(progressKeys, menuSnapshot, playingSnapshot) {
+function validateProgressKeys(progressKeys, snapshots) {
   if (!progressKeys || progressKeys.length === 0) return;
-  const menuKeys = Object.keys(menuSnapshot || {});
-  const playingKeys = Object.keys(playingSnapshot || {});
-  const topLevelKeySet = new Set([...menuKeys, ...playingKeys]);
+  const topLevelKeySet = new Set();
+  for (const snap of snapshots) {
+    for (const key of Object.keys(snap || {})) topLevelKeySet.add(key);
+  }
   const topLevelKeys = [...topLevelKeySet].sort();
   const problems = [];
   for (const key of progressKeys) {
     if (MACHINE_BOOKKEEPING_FIELDS.includes(key)) {
       problems.push(`"${key}" is one of journey.js's own machine-bookkeeping fields (${JSON.stringify(MACHINE_BOOKKEEPING_FIELDS)}), which are always filtered out of the gameplay diff before progressKeys is even consulted — declaring it can never prove or disprove progress; remove it or replace it with a real gameplay field`);
     } else if (!topLevelKeySet.has(key)) {
-      problems.push(`"${key}" is not a top-level key of this game's snapshot in MENU or PLAYING (top-level keys seen across both: ${JSON.stringify(topLevelKeys)}) — only TOP-LEVEL keys are ever diffed (diffKeys() does not descend into nested objects), so a nested path like "ball.x" will never match; did you mean a top-level key such as "ball"? Also check for a plain typo. (A key that appears only once PLAYING begins — e.g. a spawned entity — is fine and does not need to exist in MENU.)`);
+      problems.push(`"${key}" is not a top-level key of this game's snapshot in MENU or in any PLAYING-window snapshot taken so far (top-level keys seen so far: ${JSON.stringify(topLevelKeys)}) — only TOP-LEVEL keys are ever diffed (diffKeys() does not descend into nested objects), so a nested path like "ball.x" will never match; did you mean a top-level key such as "ball"? Also check for a plain typo. (A key that only materialises at some point during PLAYING — e.g. a spawned entity, or a counter that only starts moving after some ticks — is fine: it does not need to exist in MENU, or even in the very first PLAYING snapshot, only in SOME snapshot journey takes while PLAYING.)`);
     }
   }
   if (problems.length > 0) {
@@ -119,10 +155,20 @@ function progressProven(changed, progressKeys) {
   return changed.some((k) => progressKeys.includes(k));
 }
 
-async function assertAdvances(hook, label, progressKeys, ticks = PROBE_TICKS) {
+/**
+ * @param {object[]} seenSnapshots accumulator of every real snapshot taken so
+ *   far during this run (MENU + every PLAYING-window snapshot to date) —
+ *   mutated in place: this probe's own `before`/`after` are pushed onto it
+ *   BEFORE the declaration is (re-)validated against the grown set, so a
+ *   key that only materialises during THIS probe's own tick window is
+ *   already visible to validateProgressKeys() by the time it runs (see A1).
+ */
+async function assertAdvances(hook, label, progressKeys, seenSnapshots, ticks = PROBE_TICKS) {
   const before = await hook.snapshot();
   await hook.tick(ticks);
   const after = await hook.snapshot();
+  seenSnapshots.push(before, after);
+  validateProgressKeys(progressKeys, seenSnapshots);
   const changed = nonBookkeepingDiff(before, after);
   if (!progressProven(changed, progressKeys)) {
     const keyNote = progressKeys && progressKeys.length > 0
@@ -197,15 +243,17 @@ export async function run(gameDir) {
     await hook.input('primary', false);
     await assertState(hook, 'PLAYING', 'MENU -> PLAYING');
 
-    // N2 / R1: validate the declaration itself, once, up front, against the
-    // UNION of the MENU snapshot and this first real PLAYING snapshot —
-    // before progressKeys is ever relied on to prove/disprove progress in a
-    // probe below. See validateProgressKeys()'s own header for why the union
-    // (not MENU alone) is the correct check.
+    // N2 / R1 / A1: validate the declaration against the UNION of the MENU
+    // snapshot and every snapshot journey takes during a PLAYING window —
+    // accumulated here and grown (mutated in place) by every assertAdvances()
+    // call below, each of which re-validates against the grown set before
+    // deciding whether ITS OWN probe proved progress. See
+    // validateProgressKeys()'s own header (fix round A1) for why the union
+    // must include every PLAYING-window snapshot, not just the first.
     const firstPlayingSnapshot = await hook.snapshot();
-    validateProgressKeys(progressKeys, menuSnapshot, firstPlayingSnapshot);
+    const seenSnapshots = [menuSnapshot, firstPlayingSnapshot];
 
-    const advance1 = await assertAdvances(hook, 'PLAYING after start', progressKeys);
+    const advance1 = await assertAdvances(hook, 'PLAYING after start', progressKeys, seenSnapshots);
     details.push(`MENU -> PLAYING: state changed and gameplay advanced (fields: ${advance1.join(', ')})`);
 
     // --- PLAYING -> PAUSED ---
@@ -221,7 +269,7 @@ export async function run(gameDir) {
     await hook.tick(1);
     await hook.input('pause', false);
     await assertState(hook, 'PLAYING', 'PAUSED -> PLAYING (resume)');
-    const advance2 = await assertAdvances(hook, 'PLAYING after resume', progressKeys);
+    const advance2 = await assertAdvances(hook, 'PLAYING after resume', progressKeys, seenSnapshots);
     details.push(`PAUSED -> PLAYING: state changed and gameplay resumed advancing (fields: ${advance2.join(', ')})`);
 
     // --- PLAYING -> GAME_OVER (idle to the natural loss condition) ---
@@ -234,7 +282,7 @@ export async function run(gameDir) {
     await hook.tick(1);
     await hook.input('primary', false);
     await assertState(hook, 'PLAYING', 'GAME_OVER -> PLAYING (restart)');
-    const advance3 = await assertAdvances(hook, 'PLAYING after restart', progressKeys);
+    const advance3 = await assertAdvances(hook, 'PLAYING after restart', progressKeys, seenSnapshots);
     details.push(`GAME_OVER -> PLAYING (restart): state changed and gameplay advanced again (fields: ${advance3.join(', ')})`);
 
     return details;

@@ -48,7 +48,7 @@ needs the actual browser binary and its OS-level runtime libraries, which
 |---|---|---|---|
 | `npm run verify -- <game-dir>` | runs all four verifiers (smoke, journey, determinism, budget) in-process against `<game-dir>` and prints a PASS/FAIL summary. Each is also runnable standalone: `node tools/verify/{smoke,journey,determinism,budget}.js <game-dir>`. | none | `2` usage error (missing/bad game dir) · `1` one or more verifiers failed · `0` all four passed |
 | `npm run playtest -- <game-dir> [--headed] [--seed=<n>]` | plays the game twice — once via the game dir's own `playtest.probe.js`, once via a bounded exploratory session — and writes `<game-dir>/playtest-report/` (screenshots, `report.json`, `report.md`) | `--headed` runs visible Chromium (default headless); `--seed=<n>` sets the exploratory session's action-mashing PRNG (default random; the seed actually used is always printed so a run can be reproduced) | `2` usage error (no `<game-dir>` argument at all) · `1` missing/invalid `playtest.probe.js`, the game never booted to `MENU`, `__test.errors` was non-empty at the end of either session, the harness itself threw, or the overall run exceeded its 120s deadline (both sessions combined; separate from the verifiers' own 60s-per-verifier deadline in `tools/verify/lib/report.js` — see `tools/playtest/index.js`) · `0` otherwise — including when a probe's `expectState` checks mismatch (advisory) or a human hasn't yet filled in the confusion-findings table. Playtest **reports** on quality; it never gates on taste. |
-| `npm run regression` | discovers and runs every `tests/regression/*.test.js` (contract: `export async function run()` returning an array of strings, or throwing), plus `tools/verify/budget.test.js` via `node --test` | none | `1` any failure · `0` otherwise |
+| `npm run regression` | runs three checks: discovers and runs every `tests/regression/*.test.js` (contract: `export async function run()` returning an array of strings, or throwing), plus `tools/verify/budget.test.js` via `node --test`, plus `tools/ci-checks/scan-run-blocks.js` (the workflow `${{ }}` scan) against every file in `.github/workflows/` | none | `1` any failure · `0` otherwise |
 
 Sample output shapes (captured from a real fresh-clone run; exact timings vary
 by machine — the very first `verify` invocation after installing Chromium is
@@ -83,8 +83,11 @@ regression: discovered 1 test file(s) in tests/regression/
        GAME_OVER snapshot: score=1 lives=0 hits=1 misses=3
        restart snapshot: score=0 lives=3 hits=0 misses=0 ball=(320,160) paddle.x=320
 [PASS] tools/verify/budget.test.js (dormant asset-budget unit tests, via node:test) (192ms)
+[PASS] tools/ci-checks/scan-run-blocks.js (workflow ${{ }} scan) (34ms)
+       scanned /…/.github/workflows/verify.yml: 12 occurrence(s) of ${{ }}
+       OK: every ${{ }} occurrence in every given file looks like a valid expression.
 
-all 2 regression check(s) passed
+all 3 regression check(s) passed
 ```
 
 ```
@@ -128,13 +131,14 @@ instructions" — left as explicit placeholders for the human reviewing the PR).
      those keys must change across a pause/resume/restart, or journey FAILS;
      with none declared (or `[]`), journey falls back to a weaker
      "some non-bookkeeping field changed" rule and prints a one-line WARNING
-     saying so. A declared key must exist in the MENU snapshot, the first
-     PLAYING snapshot, or both (a key that only appears once play begins —
-     e.g. a spawned entity — is fine); a declared key that exists in
-     NEITHER, is a nested path (only top-level keys are diffed — `"ball"`,
-     never `"ball.x"`), or names a machine-bookkeeping field (`tick`,
-     `state`, ...) is itself a FAIL that says the declaration is wrong, not
-     the game.
+     saying so. A declared key must exist in the MENU snapshot, or in ANY
+     snapshot journey takes while PLAYING (a key that only materialises at
+     some point once play begins — e.g. a spawned entity, or a counter that
+     only starts moving after some ticks — is fine); a declared key that
+     exists in NEITHER, is a nested path (only top-level keys are diffed —
+     `"ball"`, never `"ball.x"`), or names a machine-bookkeeping field
+     (`tick`, `state`, ...) is itself a FAIL that says the declaration is
+     wrong, not the game.
    - **`notes`** — the one free-form string key for human prose on a
      `budgets.json` (e.g. why a budget was raised); any other unrecognised
      key is still a hard FAIL.
