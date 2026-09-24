@@ -53,6 +53,37 @@ function nonBookkeepingDiff(before, after) {
 }
 
 /**
+ * Fix round (N2): a declared `progressKeys` entry was never checked against
+ * anything real — a typo (`"bal"` for `"ball"`), a nested path (`"ball.x"`,
+ * when only TOP-LEVEL snapshot keys are ever diffed — see diffKeys()), or a
+ * bookkeeping field that nonBookkeepingDiff() always filters out first
+ * (`"tick"` and the rest of MACHINE_BOOKKEEPING_FIELDS) all silently made
+ * progressProven() impossible to satisfy, so journey FAILED on otherwise
+ * correct gameplay and reported it as a frozen simulation — the wrong
+ * diagnosis. Validate the declaration itself, once, up front, against a real
+ * snapshot taken from the game, and fail with a message that says plainly
+ * that the DECLARATION is wrong, not the game.
+ * @param {string[]} progressKeys
+ * @param {object} sampleSnapshot a real `__test.snapshot()` taken from this game
+ */
+function validateProgressKeys(progressKeys, sampleSnapshot) {
+  if (!progressKeys || progressKeys.length === 0) return;
+  const topLevelKeys = Object.keys(sampleSnapshot || {});
+  const topLevelKeySet = new Set(topLevelKeys);
+  const problems = [];
+  for (const key of progressKeys) {
+    if (MACHINE_BOOKKEEPING_FIELDS.includes(key)) {
+      problems.push(`"${key}" is one of journey.js's own machine-bookkeeping fields (${JSON.stringify(MACHINE_BOOKKEEPING_FIELDS)}), which are always filtered out of the gameplay diff before progressKeys is even consulted — declaring it can never prove or disprove progress; remove it or replace it with a real gameplay field`);
+    } else if (!topLevelKeySet.has(key)) {
+      problems.push(`"${key}" is not a top-level key of this game's snapshot (top-level keys are: ${JSON.stringify(topLevelKeys)}) — only TOP-LEVEL keys are ever diffed (diffKeys() does not descend into nested objects), so a nested path like "ball.x" will never match; did you mean a top-level key such as "ball"? Also check for a plain typo.`);
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(`budgets.json declares invalid progressKeys ${JSON.stringify(progressKeys)} — the DECLARATION is wrong, not this game's behaviour:\n  - ${problems.join('\n  - ')}`);
+  }
+}
+
+/**
  * `changed` is the full non-bookkeeping diff. When `progressKeys` is declared
  * (non-empty), at least one of THOSE keys must be among `changed` — a game's
  * own bookkeeping counters (ticksInPlay, serveTimer, ...) no longer count as
@@ -119,9 +150,26 @@ export async function run(gameDir) {
     const hook = await gotoGameAndWaitForMenu(page, baseURL, budgets.entry);
     await assertState(hook, 'MENU', 'initial load');
     details.push('MENU reached after load');
-    details.push(progressKeys.length > 0
-      ? `progressKeys declared: ${JSON.stringify(progressKeys)} — at least one MUST change to prove gameplay advanced`
-      : 'no progressKeys declared in budgets.json — falling back to any-non-bookkeeping-key-changed (weaker) rule');
+
+    // N2: validate the declaration itself, once, up front, against a real
+    // snapshot from this game — before it is ever relied on to prove/disprove
+    // progress in a probe below.
+    const sampleSnapshot = await hook.snapshot();
+    validateProgressKeys(progressKeys, sampleSnapshot);
+
+    if (progressKeys.length > 0) {
+      details.push(`progressKeys declared: ${JSON.stringify(progressKeys)} — at least one MUST change to prove gameplay advanced`);
+    } else {
+      // Fix round (N1): this used to only land in `details`, which
+      // printResult() (tools/verify/lib/report.js) only ever prints on
+      // FAILURE — so on a PASSING run (exactly the case this warns about: a
+      // transient freeze-after-resume bug that still slips past the weaker
+      // fallback rule) nobody ever saw it. Print it unconditionally, and
+      // directly, so it is visible on every run regardless of outcome.
+      const warning = `WARNING: ${gameDir} declares no progressKeys in budgets.json — journey falls back to the WEAKER "any non-bookkeeping snapshot key changed" rule, which a TRANSIENT gameplay freeze can still pass (e.g. if some other non-bookkeeping field, such as a per-game counter, keeps moving while the actual simulation is frozen). Declare progressKeys (the snapshot keys that prove real gameplay moved, as opposed to bookkeeping counters) in budgets.json for the stronger guarantee — see docs/spec-template.md §7.`;
+      console.warn(`[journey] ${warning}`);
+      details.push(warning);
+    }
 
     // --- MENU -> PLAYING ---
     await hook.input('primary', true);

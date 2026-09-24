@@ -8,8 +8,15 @@ import { join } from 'node:path';
 
 let counter = 0;
 
-/** Take a screenshot into `dir`, numbered so filenames sort in capture order. */
+/** Take a screenshot into `dir`, numbered so filenames sort in capture order.
+ * Fix round (N7): `dir` may be `null`/falsy to disable screenshot capture
+ * entirely (e.g. tools/verify/determinism.js's probe replay, which only ever
+ * needs the final snapshot — the screenshots it used to take into a scratch
+ * dir were discarded, unread, immediately after, at real wall-clock cost).
+ * Returns `null` in that case; callers must treat a `null` return as "no
+ * screenshot was taken" rather than assuming one always was. */
 export async function captureScreenshot(page, dir, label) {
+  if (!dir) return null;
   counter += 1;
   const safeLabel = label.replace(/[^a-z0-9-]+/gi, '-').slice(0, 80);
   const file = `${String(counter).padStart(3, '0')}-${safeLabel}.png`;

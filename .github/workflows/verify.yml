@@ -111,9 +111,16 @@ jobs:
             # treat that as "all game dirs changed" rather than playtesting
             # nothing (the previous behaviour, since such a PR touches no path
             # under games/ at all).
-            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/)'; then
+            # Fix round (N9): package.json / package-lock.json (the toolchain
+            # itself — a dependency bump can change verifier/playtest/session
+            # behaviour just as much as an edit under tools/) and tests/ (the
+            # regression suite, whose contract every game is implicitly judged
+            # against) affect every game exactly the same way templates/ and
+            # tools/ do — they were missing from this check entirely, so a
+            # change to any of them playtested nothing.
+            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/|tests/|package\.json$|package-lock\.json$)'; then
               CHANGED_JSON="$ALL_JSON"
-              echo "templates/ or tools/ changed — treating every game dir as changed"
+              echo "templates/, tools/, tests/, package.json or package-lock.json changed — treating every game dir as changed"
             else
               CHANGED_JSON=$(echo "$CHANGED_FILES" | { grep '^games/' || true; } | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
             fi
@@ -152,8 +159,14 @@ jobs:
           # Fix round (A12): the changed-dirs JSON is PR-controlled (it comes
           # from directory names an attacker can choose). Piping it through
           # `env:` and reading "$CHANGED_JSON" here avoids ever interpolating
-          # it directly into the shell command line the way
-          # `echo '${{ ... }}'` used to.
+          # it directly into the shell command line the way the previous,
+          # unsafe version of this step used to (writing the expression
+          # literally into an echo call).
+          #
+          # NOTE: GitHub evaluates the double-curly template syntax ANYWHERE
+          # inside a `run:` block, including inside shell comments and quoted
+          # strings — it is not shell text. Never write that literal syntax
+          # in a comment here unless it is a real, valid expression.
           CHANGED=$(echo "$CHANGED_JSON" | jq -r '.[]')
           for name in $CHANGED; do
             [ -z "$name" ] && continue

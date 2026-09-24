@@ -14,6 +14,13 @@
 // CONFIG.FIXED_HZ (60) — the template's fixed simulation rate is a repo-wide
 // constant, not something a game may override, so there is nothing to read
 // back from the page.
+//
+// Fix round (N7): `screenshotDir` may be `null`/falsy to disable screenshot
+// capture for this whole replay (captureScreenshot() then no-ops and returns
+// `null` every time, and no `screenshot` events are emitted) — used by
+// tools/verify/determinism.js's probe replay, which only needs the final
+// snapshot and used to pay real wall-clock cost taking screenshots into a
+// scratch directory that was discarded, unread, right after.
 
 import { captureScreenshot } from './capture.js';
 
@@ -31,7 +38,7 @@ export async function runScriptedSession({ page, hook, probe, screenshotDir }) {
 
   let lastState = await hook.state();
   const startShot = await captureScreenshot(page, screenshotDir, `scripted-start-${lastState}`);
-  events.push({ type: 'screenshot', file: startShot, reason: 'segment-start', state: lastState });
+  if (startShot) events.push({ type: 'screenshot', file: startShot, reason: 'segment-start', state: lastState });
 
   let ticksSoFar = 0;
   let nextScreenshotAtTick = SCREENSHOT_TICK_INTERVAL;
@@ -40,7 +47,7 @@ export async function runScriptedSession({ page, hook, probe, screenshotDir }) {
   async function capturePeriodicIfDue(currentState) {
     while (ticksSoFar >= nextScreenshotAtTick) {
       const file = await captureScreenshot(page, screenshotDir, `scripted-periodic-tick${nextScreenshotAtTick}-${currentState}`);
-      events.push({ type: 'screenshot', file, reason: 'periodic-5s-simulated', state: currentState, simulatedTick: nextScreenshotAtTick });
+      if (file) events.push({ type: 'screenshot', file, reason: 'periodic-5s-simulated', state: currentState, simulatedTick: nextScreenshotAtTick });
       nextScreenshotAtTick += SCREENSHOT_TICK_INTERVAL;
     }
   }
@@ -84,13 +91,13 @@ export async function runScriptedSession({ page, hook, probe, screenshotDir }) {
     const newState = await hook.state();
     if (newState !== lastState) {
       const file = await captureScreenshot(page, screenshotDir, `scripted-transition-${lastState}-to-${newState}`);
-      events.push({ type: 'screenshot', file, reason: 'transition', from: lastState, to: newState, index: i });
+      if (file) events.push({ type: 'screenshot', file, reason: 'transition', from: lastState, to: newState, index: i });
       lastState = newState;
     }
   }
 
   const endShot = await captureScreenshot(page, screenshotDir, `scripted-end-${lastState}`);
-  events.push({ type: 'screenshot', file: endShot, reason: 'segment-end', state: lastState });
+  if (endShot) events.push({ type: 'screenshot', file: endShot, reason: 'segment-end', state: lastState });
 
   const finalSnapshot = await hook.snapshot();
   const finalErrors = await hook.errors();

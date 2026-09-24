@@ -38,6 +38,28 @@ It exits **zero** whenever both sessions completed cleanly and a report was writ
 const EXPLORATORY_DURATION_MS = 10000;
 const BOOT_TIMEOUT_MS = 10000;
 
+// Fix round (N4): `npm run playtest` had NO overall deadline at all — a game
+// that hangs (e.g. an infinite loop reachable from a tick()/evaluate() call
+// in either session, or a page that never settles) left the harness running
+// indefinitely; observed still hung at 150s with no end in sight. 120s is
+// generous versus a normal run's observed ~5-15s (scripted session + bounded
+// 10s-real-time exploratory session + report writing) while still being a
+// real, hard ceiling. This is a SEPARATE deadline from the verifiers' own
+// existing 60s-per-verifier deadline (tools/verify/lib/report.js, untouched
+// by this fix) — this one covers the playtest harness as a whole (both
+// sessions plus report writing), not any single verifier.
+const PLAYTEST_DEADLINE_MS = 120000;
+
+/** Race `promise` against a `ms` timeout; rejects with a clear message on timeout, never leaves a dangling timer. */
+function withDeadline(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function parseArgs(argv) {
   let headed = false, seed = null, gameDirArg = null;
   for (const a of argv) {
@@ -89,44 +111,50 @@ async function main() {
   await rm(reportDir, { recursive: true, force: true });
   await mkdir(reportDir, { recursive: true });
 
-  const session = await serveAndLaunch(gameDir, { headless: !headed });
-  let hardFailure = null;
   let scripted = null;
   let exploratory = null;
 
-  try {
-    // --- Session 1: scripted probe (ticked, deterministic) ---
-    const { page: scriptedPage, close: closeScriptedPage } = await session.newPage();
+  /** Both sessions, start to finish — this whole body is what N4's overall deadline bounds. */
+  async function runBothSessions() {
+    const session = await serveAndLaunch(gameDir, { headless: !headed });
     try {
-      const hook = await gotoGameAndWaitForMenu(scriptedPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
-      const startState = await hook.state();
-      const result = await runScriptedSession({ page: scriptedPage, hook, probe, screenshotDir: reportDir });
-      scripted = { ...result, startState, probeName: probe.name, probeDescription: probe.description, seed: probe.seed };
-      console.log(`scripted session: ${scripted.finalErrors.length === 0 ? 'clean' : `${scripted.finalErrors.length} error(s)`}`);
-    } finally {
-      await closeScriptedPage();
-    }
+      // --- Session 1: scripted probe (ticked, deterministic) ---
+      const { page: scriptedPage, close: closeScriptedPage } = await session.newPage();
+      try {
+        const hook = await gotoGameAndWaitForMenu(scriptedPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
+        const startState = await hook.state();
+        const result = await runScriptedSession({ page: scriptedPage, hook, probe, screenshotDir: reportDir });
+        scripted = { ...result, startState, probeName: probe.name, probeDescription: probe.description, seed: probe.seed };
+        console.log(`scripted session: ${scripted.finalErrors.length === 0 ? 'clean' : `${scripted.finalErrors.length} error(s)`}`);
+      } finally {
+        await closeScriptedPage();
+      }
 
-    // --- Session 2: bounded, seeded exploratory session (real-time) ---
-    const { page: exploratoryPage, close: closeExploratoryPage } = await session.newPage();
-    try {
-      await installFrameRecorder(exploratoryPage); // must be installed before goto
-      const hook = await gotoGameAndWaitForMenu(exploratoryPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
-      const startState = await hook.state();
-      const result = await runExploratorySession({ page: exploratoryPage, hook, seed, maxWallMs: EXPLORATORY_DURATION_MS, screenshotDir: reportDir });
-      exploratory = { ...result, startState, requestedDurationMs: EXPLORATORY_DURATION_MS };
-      console.log(`exploratory session: ${exploratory.finalErrors.length === 0 ? 'clean' : `${exploratory.finalErrors.length} error(s)`} (${exploratory.fps.avgFps ?? 'n/a'} avg fps)`);
+      // --- Session 2: bounded, seeded exploratory session (real-time) ---
+      const { page: exploratoryPage, close: closeExploratoryPage } = await session.newPage();
+      try {
+        await installFrameRecorder(exploratoryPage); // must be installed before goto
+        const hook = await gotoGameAndWaitForMenu(exploratoryPage, session.baseURL, probe.entry || 'index.html', { timeoutMs: BOOT_TIMEOUT_MS });
+        const startState = await hook.state();
+        const result = await runExploratorySession({ page: exploratoryPage, hook, seed, maxWallMs: EXPLORATORY_DURATION_MS, screenshotDir: reportDir });
+        exploratory = { ...result, startState, requestedDurationMs: EXPLORATORY_DURATION_MS };
+        console.log(`exploratory session: ${exploratory.finalErrors.length === 0 ? 'clean' : `${exploratory.finalErrors.length} error(s)`} (${exploratory.fps.avgFps ?? 'n/a'} avg fps)`);
+      } finally {
+        await closeExploratoryPage();
+      }
     } finally {
-      await closeExploratoryPage();
+      await session.close();
     }
-  } catch (err) {
-    hardFailure = err;
-  } finally {
-    await session.close();
   }
 
-  if (hardFailure) {
-    console.error(`FAIL: playtest could not complete: ${hardFailure.message}`);
+  try {
+    await withDeadline(
+      runBothSessions(),
+      PLAYTEST_DEADLINE_MS,
+      `playtest exceeded its overall ${PLAYTEST_DEADLINE_MS}ms deadline — the harness appears to be hung (e.g. an infinite loop reachable from a tick()/evaluate() call in the scripted or exploratory session, or a page that never settles); failing instead of running forever. (This is the playtest harness's own deadline, covering both sessions; it is separate from the verifiers' existing 60s-per-verifier deadline, which is unchanged.)`
+    );
+  } catch (err) {
+    console.error(`FAIL: playtest could not complete: ${err.message}`);
     process.exit(1);
   }
 

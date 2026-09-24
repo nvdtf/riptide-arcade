@@ -113,10 +113,26 @@ instructions" — left as explicit placeholders for the human reviewing the PR).
    `games/fixture-pong/playtest.probe.js` for the step grammar and a
    reference interpreter) and `games/<name>/budgets.json` (see
    `games/fixture-pong/budgets.json` for the key names `tools/verify/budget.js`
-   reads and `tools/verify/journey.js` reads (`progressKeys`); omitted keys
-   fall back to the tool's defaults; every declared key is type-checked —
-   a misspelled or mistyped key is a `budget` FAIL naming it, never a silent
-   default).
+   reads; omitted keys fall back to the tool's defaults; every declared key
+   is type-checked — a misspelled or mistyped key is a FAIL naming it, from
+   ALL FOUR verifiers, since every one of them loads and validates
+   `budgets.json` before doing anything else, never a silent default).
+   - **`progressKeys`** — declare the top-level `__test.snapshot()` keys that
+     prove real gameplay moved (as opposed to bookkeeping counters that
+     advance unconditionally). `tools/verify/journey.js` reads this list as
+     EXPECTED PRACTICE for every game: with it declared, at least one of
+     those keys must change across a pause/resume/restart, or journey FAILS;
+     with none declared (or `[]`), journey falls back to a weaker
+     "some non-bookkeeping field changed" rule and prints a one-line WARNING
+     saying so. A declared key that doesn't exist in the snapshot, is a
+     nested path (only top-level keys are diffed — `"ball"`, never
+     `"ball.x"`), or names a machine-bookkeeping field (`tick`, `state`, ...)
+     is itself a FAIL that says the declaration is wrong, not the game.
+   - **`notes`** — the one free-form string key for human prose on a
+     `budgets.json` (e.g. why a budget was raised); any other unrecognised
+     key is still a hard FAIL.
+   - **`budgetsVersion`** — must be a version this tool understands (`1`
+     today); an unrecognised version is a FAIL, not a silent accept.
 5. Write the game's spec from [`docs/spec-template.md`](docs/spec-template.md)
    before or alongside the implementation.
 
@@ -149,17 +165,19 @@ a worked example.
 [`.github/workflows/verify.yml`](.github/workflows/verify.yml) — one job,
 `verify`, triggered on every `pull_request` (any base), on `push` to `main`,
 and on demand via `workflow_dispatch`. `permissions: contents: read` — fork
-PRs run with no secrets. Steps, in order: checkout → **regression suite
-shrink check** (fails if any `tests/regression/*.test.js` present on the base
-commit is missing from HEAD — see [the regression rule](#the-regression-rule))
-→ setup Node → `npm ci` → cache Playwright's Chromium download → install
-Chromium → discover game directories (all vs. changed, diffed against the PR
-base or the previous push; a change under `templates/` or `tools/` counts as
-"every game dir changed", since either can affect every game) → verify every
-game directory → run the regression suite → playtest every changed game
-directory (`if: always()`, so a verify failure does not suppress the report a
-reviewer most wants) → upload one `playtest-reports` artifact bundling every
-changed game's report as a subfolder. Budgeted to finish under 5 minutes.
+PRs run with no secrets. Steps, in order: checkout → setup Node →
+**regression suite shrink check** (fails if any `tests/regression/*.test.js`
+present on the base commit is missing from HEAD — see
+[the regression rule](#the-regression-rule)) → `npm ci` → cache Playwright's
+Chromium download → install Chromium → discover game directories (all vs.
+changed, diffed against the PR base or the previous push; a change under
+`templates/`, `tools/`, or `tests/`, or to `package.json`/`package-lock.json`
+themselves, counts as "every game dir changed", since any of those can affect
+every game) → verify every game directory → run the regression suite →
+playtest every changed game directory (`if: always()`, so a verify failure
+does not suppress the report a reviewer most wants) → upload one
+`playtest-reports` artifact bundling every changed game's report as a
+subfolder. Budgeted to finish under 5 minutes.
 
 ## `games/fixture-pong/`
 

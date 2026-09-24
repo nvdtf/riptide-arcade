@@ -241,3 +241,64 @@ test('budget.js (C2): a valid budgets.json with progressKeys declared still pass
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --- Fix round N3: a documented `notes` free-form string escape hatch, and a
+// `budgetsVersion` the tool does not understand is now a clear FAIL rather
+// than a silent accept.
+
+test('budget.js (N3): a documented `notes` string key is accepted', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      notes: 'maxDirBytes raised because this game ships one .glb asset'
+    }));
+    const { ok, violations } = await checkBudgets(dir);
+    assert.equal(ok, true, `expected pass, got violations: ${JSON.stringify(violations)}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (N3): a non-string `notes` fails validation', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      notes: 12345 // BUG: not a string
+    }));
+    await assert.rejects(() => checkBudgets(dir), /"notes" must be a string/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (N3): `_comment` is NOT the escape hatch — still a hard FAIL (only `notes` is sanctioned)', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 1, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: [],
+      _comment: 'humans love writing these'
+    }));
+    await assert.rejects(() => checkBudgets(dir), /unknown top-level key "_comment"/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('budget.js (N3): an unrecognised budgetsVersion (99) fails validation with a clear message, not a silent accept', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'riptide-budget-test-'));
+  try {
+    await writeFile(join(dir, 'index.html'), '<!doctype html><title>scratch</title>');
+    await writeFile(join(dir, 'budgets.json'), JSON.stringify({
+      budgetsVersion: 99, entry: 'index.html', maxFileBytes: 1000, maxDirBytes: 5000, excludeGlobs: []
+    }));
+    await assert.rejects(() => checkBudgets(dir), /"budgetsVersion" 99 is not a version this tool understands/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+

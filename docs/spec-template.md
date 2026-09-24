@@ -234,6 +234,28 @@ file (per `budgets.json`, below) with nothing else running.
 > a key name here that doesn't match what the verifier reads is a spec bug).
 > Override only what this game genuinely needs different from the tool's
 > defaults, and say why.*
+>
+> **`progressKeys` — expected practice, not optional polish.** Declare the
+> top-level `__test.snapshot()` keys that PROVE real gameplay moved, as
+> opposed to bookkeeping counters that advance unconditionally whether or not
+> the simulation is actually frozen (e.g. a tick counter, a serve/reaction
+> timer). `tools/verify/journey.js` uses this list to check that gameplay
+> genuinely resumes after every pause/restart; a game that declares NO
+> `progressKeys` (or `[]`) still passes journey on the weaker fallback rule
+> ("some non-bookkeeping field changed"), which a transient freeze can slip
+> past if any of the game's own counters keeps moving while the simulation
+> itself is frozen. Every game should declare at least one — see the worked
+> example below (`["asteroidPositions","hullIntegrity","oreCount"]`-style
+> fields, never `tick`/`stateTick`/anything journey.js already treats as
+> machine bookkeeping, and only TOP-LEVEL keys — a nested path like
+> `"ball.x"` is never checked, since only top-level keys are diffed).
+> `journey.js` prints a one-line WARNING naming this weaker fallback whenever
+> a game declares none.
+>
+> `notes` is the one free-form, documented escape hatch for human prose on a
+> game's budgets.json (e.g. explaining why a budget was raised) — any OTHER
+> unrecognised key (a typo, `_comment`, anything not in the tool's schema) is
+> still a hard FAIL.
 
 **Example (Meteor Miner)** — `games/meteor-miner/budgets.json`:
 
@@ -244,6 +266,8 @@ file (per `budgets.json`, below) with nothing else running.
   "maxFileBytes": 204800,
   "maxDirBytes": 3145728,
   "excludeGlobs": ["playtest-report/**", "*.map"],
+  "progressKeys": ["shipPosition", "hullIntegrity", "oreCount"],
+  "notes": "maxDirBytes raised for the one asteroid.glb asset; see §4.",
   "assets": {
     "maxGlbFileBytes": 1048576,
     "maxGlbTriangles": 20000,
@@ -256,6 +280,9 @@ file (per `budgets.json`, below) with nothing else running.
 game ships one `.glb` asset; `assets.maxGlbTriangles` is tightened from the
 tool default (50,000) to 20,000 since a single low-poly asteroid never needs
 more, and this game's own per-asteroid cap (§4) is tighter still at 1,200.
+`progressKeys` names the three fields that prove the ship is actually
+piloting, taking hull damage, and mining ore — not just that some tick
+counter advanced.
 
 ---
 
@@ -326,6 +353,7 @@ Game-specific probes this task expects scripted:
   "maxFileBytes": <bytes>,
   "maxDirBytes": <bytes>,
   "excludeGlobs": ["playtest-report/**", "*.map"],
+  "progressKeys": ["<top-level snapshot key that proves gameplay moved>", "..."],
   "assets": { "maxGlbFileBytes": <bytes>, "maxGlbTriangles": <n>, "requireRigCheck": true }
 }
 ```

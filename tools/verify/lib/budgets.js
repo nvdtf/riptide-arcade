@@ -52,8 +52,20 @@ export const DEFAULT_BUDGETS = Object.freeze({
 // that gameplay itself advanced, consumed by tools/verify/journey.js — see
 // that file's header comment. Not used by budget.js itself, but it lives in
 // the same budgets.json, so it is validated here alongside everything else.
-const ALLOWED_TOP_KEYS = new Set(['budgetsVersion', 'entry', 'maxFileBytes', 'maxDirBytes', 'excludeGlobs', 'progressKeys', 'assets']);
+// `notes` (fix round N3): the one free-form, documented escape hatch for
+// human notes on a game's budgets.json (e.g. "why maxDirBytes is raised") —
+// see README.md/docs/spec-template.md §7 for the one-line description. Any
+// OTHER unrecognised key (a typo, `_comment`, anything not in this list) is
+// still a hard FAIL — `notes` is the only sanctioned place for prose.
+const ALLOWED_TOP_KEYS = new Set(['budgetsVersion', 'entry', 'maxFileBytes', 'maxDirBytes', 'excludeGlobs', 'progressKeys', 'assets', 'notes']);
 const ALLOWED_ASSET_KEYS = new Set(['maxGlbFileBytes', 'maxGlbTriangles', 'requireRigCheck']);
+
+// fix round N3: budgetsVersion used to be validated as "any finite
+// non-negative number", so a value like 99 — meaningless to every version of
+// this tool that has ever existed — was accepted silently, as if the file
+// declared a schema version this tool actually understood. The only version
+// this tool has ever spoken is 1.
+const KNOWN_BUDGETS_VERSIONS = new Set([1]);
 
 function isFiniteNonNegativeNumber(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
@@ -71,6 +83,8 @@ function validateBudgets(declared) {
 
   if (declared.budgetsVersion !== undefined && !isFiniteNonNegativeNumber(declared.budgetsVersion)) {
     problems.push(`"budgetsVersion" must be a finite non-negative number, got ${JSON.stringify(declared.budgetsVersion)}`);
+  } else if (declared.budgetsVersion !== undefined && !KNOWN_BUDGETS_VERSIONS.has(declared.budgetsVersion)) {
+    problems.push(`"budgetsVersion" ${JSON.stringify(declared.budgetsVersion)} is not a version this tool understands (known: ${[...KNOWN_BUDGETS_VERSIONS].join(', ')}) — this is not silently accepted; either this budgets.json targets a newer/older tool than the one running, or the number is a typo`);
   }
   if (declared.entry !== undefined && (typeof declared.entry !== 'string' || declared.entry.length === 0)) {
     problems.push(`"entry" must be a non-empty string, got ${JSON.stringify(declared.entry)}`);
@@ -92,6 +106,9 @@ function validateBudgets(declared) {
     if (!isArrayOfStrings) {
       problems.push(`"progressKeys" must be an array of strings, got ${JSON.stringify(declared.progressKeys)}`);
     }
+  }
+  if (declared.notes !== undefined && typeof declared.notes !== 'string') {
+    problems.push(`"notes" must be a string, got ${JSON.stringify(declared.notes)}`);
   }
   if (declared.assets !== undefined) {
     if (declared.assets === null || typeof declared.assets !== 'object' || Array.isArray(declared.assets)) {

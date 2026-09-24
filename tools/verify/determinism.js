@@ -32,11 +32,25 @@
 //   check pass trivially even for a game that ignores the seed entirely. Fix:
 //   compare snapshots with `rng` excluded, so only the GAME's own fields can
 //   satisfy the check.
+//   N6 — the probe-replay path (added for C4) misattributed blame: a
+//   mismatch always named only "the game's own scored mechanic" (never
+//   playtest.probe.js itself, which can just as easily be the nondeterministic
+//   party — e.g. a controller() reading Math.random()); a probe that threw
+//   mid-replay surfaced its raw message with no mention of playtest.probe.js
+//   at all; and a probe file that exists but is malformed (import failure, or
+//   no `.steps` array) was silently treated as "no probe found", quietly
+//   weakening the check instead of failing loudly. Fixed: every error path
+//   through the probe replay now names playtest.probe.js as a suspect, and a
+//   malformed probe is a FAIL, never a silent downgrade.
+//   N7 — the probe replay (twice, per run) was writing screenshots into a
+//   temp directory that was discarded, unread, immediately after — the sole
+//   consumer of a probe replay here is the final snapshot. Screenshot capture
+//   is now skippable (`screenshotDir: null`), cutting most of the ~10s this
+//   verifier had grown to.
 //
 // Individually runnable: `node tools/verify/determinism.js <game-dir>`
 
-import { mkdtemp, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { openGame } from '../lib/browser.js';
@@ -100,27 +114,53 @@ async function runScript(gameDir, seed, entry) {
   }
 }
 
-/** Load `<gameDir>/playtest.probe.js` if present; return null (not throw) if absent. */
+/**
+ * Load `<gameDir>/playtest.probe.js`.
+ * Returns `null` ONLY when the file is genuinely ABSENT (no such path) — that
+ * is a legitimate, quiet fallback to the generic-script-only check.
+ * Fix round (N6): a probe file that EXISTS but is malformed (fails to
+ * import — a syntax error, a throwing top-level statement — or imports fine
+ * but exports no valid `.steps` array) used to be treated identically to "no
+ * probe found", silently weakening the check with no hint that
+ * `playtest.probe.js` itself was the problem (an import failure could even
+ * surface later as a confusing `probe is not defined`-style ReferenceError
+ * from unrelated code, with nothing pointing back at this file). Both cases
+ * now THROW a clear error naming `playtest.probe.js` as the suspect — a
+ * malformed probe is a FAIL, not a silent downgrade.
+ */
 async function loadProbeIfPresent(gameDir) {
   const probePath = join(gameDir, 'playtest.probe.js');
   try {
     await stat(probePath);
   } catch {
-    return null;
+    return null; // genuinely absent — the quiet, legitimate fallback case
   }
-  const mod = await import(pathToFileURL(probePath).href);
+  let mod;
+  try {
+    mod = await import(pathToFileURL(probePath).href);
+  } catch (e) {
+    throw new Error(`playtest.probe.js exists (${probePath}) but failed to import: ${e.message} — this is a MALFORMED probe, not an absent one; fix or remove the file rather than letting the determinism check silently fall back to the weaker generic-script-only guarantee`);
+  }
   const probe = mod.default || mod.probe;
-  if (!probe || !Array.isArray(probe.steps)) return null;
+  if (!probe || !Array.isArray(probe.steps)) {
+    throw new Error(`playtest.probe.js exists (${probePath}) but does not export a valid probe with a "steps" array (expected 'export default probe', got ${JSON.stringify(probe)}) — this is a MALFORMED probe, not an absent one; fix or remove the file rather than letting the determinism check silently fall back to the weaker generic-script-only guarantee`);
+  }
   return probe;
 }
 
-/** Replay `probe` once against a fresh page/session; return the final snapshot. Reuses the playtest interpreter. */
-async function runProbeOnce(gameDir, probe, scratchDir) {
+/**
+ * Replay `probe` once against a fresh page/session; return the final snapshot.
+ * Reuses the playtest interpreter. `screenshotDir: null` (fix round N7) skips
+ * screenshot capture entirely — this replay only needs the final snapshot,
+ * and the screenshots were being written to a scratch directory that was
+ * discarded unread immediately after, at real wall-clock cost.
+ */
+async function runProbeOnce(gameDir, probe, screenshotDir = null) {
   const entry = probe.entry || 'index.html';
   const { page, baseURL, close } = await openGame(gameDir, { headless: true });
   try {
     const hook = await gotoGameAndWaitForMenu(page, baseURL, entry);
-    const result = await runScriptedSession({ page, hook, probe, screenshotDir: scratchDir });
+    const result = await runScriptedSession({ page, hook, probe, screenshotDir });
     if (result.finalErrors.length > 0) {
       throw new Error(`unexpected __test.errors during playtest.probe.js replay (seed ${probe.seed}): ${JSON.stringify(result.finalErrors[0])}`);
     }
@@ -156,26 +196,34 @@ export async function run(gameDir) {
   // C4: additionally replay the game's OWN scripted probe, which (unlike the
   // generic script) actually chases the ball and exercises the paddle-hit
   // path — the fixture's only per-hit RNG draw is otherwise never reached.
+  // N7: no scratch dir / screenshots here any more — see runProbeOnce().
   const probe = await loadProbeIfPresent(gameDir);
   if (probe) {
-    const scratchDir = await mkdtemp(join(tmpdir(), 'riptide-determinism-probe-'));
+    let probeSnap1, probeSnap2;
     try {
-      const probeSnap1 = await runProbeOnce(gameDir, probe, scratchDir);
-      const probeSnap2 = await runProbeOnce(gameDir, probe, scratchDir);
-      if (!snapshotsEqual(probeSnap1, probeSnap2)) {
-        const err = new Error(`playtest.probe.js replayed twice at seed ${probe.seed} produced DIFFERENT final snapshots — a hidden Math.random()/time/order dependency is likely in the game's own scored mechanic (the generic script above can miss this if it never exercises that mechanic)`);
-        err.details = [
-          `run 1 digest: ${snapshotDigest(probeSnap1)}`,
-          `run 2 digest: ${snapshotDigest(probeSnap2)}`,
-          `run 1: ${canonicalJSON(probeSnap1).slice(0, 500)}`,
-          `run 2: ${canonicalJSON(probeSnap2).slice(0, 500)}`
-        ];
-        throw err;
-      }
-      details.push(`playtest.probe.js ("${probe.name}") replayed twice at seed ${probe.seed}: identical final snapshots (digest ${snapshotDigest(probeSnap1)}) — the game's own scored mechanic is deterministic too`);
-    } finally {
-      await rm(scratchDir, { recursive: true, force: true });
+      probeSnap1 = await runProbeOnce(gameDir, probe);
+      probeSnap2 = await runProbeOnce(gameDir, probe);
+    } catch (e) {
+      // N6: a probe that THROWS during replay (as opposed to merely producing
+      // a mismatched snapshot) used to surface its raw, un-contextualized
+      // message — name playtest.probe.js as the suspect explicitly.
+      throw new Error(`playtest.probe.js ("${probe.name || 'unnamed'}", seed ${probe.seed}) threw during determinism replay: ${e.message} — treat playtest.probe.js itself (its steps array, or its controller() function if it has one) as the primary suspect, alongside the scripted-session interpreter it runs through`);
     }
+    if (!snapshotsEqual(probeSnap1, probeSnap2)) {
+      // N6: this used to blame only "the game's own scored mechanic" — but a
+      // mismatch here can equally be caused by playtest.probe.js itself (e.g.
+      // a controller() that reads Math.random() or wall-clock time instead of
+      // the game's own seeded RNG). Name both suspects, playtest.probe.js first.
+      const err = new Error(`playtest.probe.js ("${probe.name || 'unnamed'}") replayed twice at seed ${probe.seed} produced DIFFERENT final snapshots — a hidden Math.random()/time/order dependency is likely, either in playtest.probe.js itself (its steps, or its controller() function) or in the game's own scored mechanic the probe exercises (the generic script above already ruled out everything the generic script itself reaches, so playtest.probe.js is the first place to look)`);
+      err.details = [
+        `run 1 digest: ${snapshotDigest(probeSnap1)}`,
+        `run 2 digest: ${snapshotDigest(probeSnap2)}`,
+        `run 1: ${canonicalJSON(probeSnap1).slice(0, 500)}`,
+        `run 2: ${canonicalJSON(probeSnap2).slice(0, 500)}`
+      ];
+      throw err;
+    }
+    details.push(`playtest.probe.js ("${probe.name}") replayed twice at seed ${probe.seed}: identical final snapshots (digest ${snapshotDigest(probeSnap1)}) — the game's own scored mechanic is deterministic too`);
   } else {
     details.push('no playtest.probe.js found in this game dir — probe-based replay SKIPPED, falling back to the generic script only; this is a WEAKER determinism guarantee for any mechanic the generic script does not exercise (e.g. a paddle-hit path a stationary/centred paddle never reaches)');
   }
