@@ -53,15 +53,19 @@ needs the actual browser binary and its OS-level runtime libraries, which
 Sample output shapes (captured from a real fresh-clone run; exact timings vary
 by machine — the very first `verify` invocation after installing Chromium is
 markedly slower, e.g. `smoke` took ~20s on its cold-start run here vs. under
-1s on every run after):
+1s on every run after). Note `determinism` is now ~10s, not under 1s — see
+[the fix-round note in `tools/verify/determinism.js`](tools/verify/determinism.js)
+(C4/N7): most of that is the probe-replay path added to catch a determinism
+bug the generic script alone cannot reach, and it will keep changing as that
+path evolves — do not treat this number as stable:
 
 ```
 $ npm run verify -- games/fixture-pong
 verify: /…/games/fixture-pong
-[PASS] smoke (255ms)
-[PASS] journey (259ms)
-[PASS] determinism (685ms)
-[PASS] budget (3ms)
+[PASS] smoke (258ms)
+[PASS] journey (266ms)
+[PASS] determinism (10124ms)
+[PASS] budget (2ms)
 
 verify summary:
   [PASS] smoke
@@ -74,11 +78,11 @@ all 4 verifier(s) passed
 ```
 $ npm run regression
 regression: discovered 1 test file(s) in tests/regression/
-[PASS] fixture-pong-restart-resets-state.test.js (3777ms)
+[PASS] fixture-pong-restart-resets-state.test.js (3330ms)
        scored 1 hit(s) / score 1 before losing all lives (400 controlled + 1400 idle ticks)
        GAME_OVER snapshot: score=1 lives=0 hits=1 misses=3
        restart snapshot: score=0 lives=3 hits=0 misses=0 ball=(320,160) paddle.x=320
-[PASS] tools/verify/budget.test.js (dormant asset-budget unit tests, via node:test) (124ms)
+[PASS] tools/verify/budget.test.js (dormant asset-budget unit tests, via node:test) (192ms)
 
 all 2 regression check(s) passed
 ```
@@ -86,11 +90,11 @@ all 2 regression check(s) passed
 ```
 $ npm run playtest -- games/fixture-pong
 playtest: /…/games/fixture-pong
-exploratory seed: 447338492 (pass --seed=447338492 to reproduce the action sequence)
+exploratory seed: 1146444645 (pass --seed=1146444645 to reproduce the action sequence)
 mode: headless
 scripted session: clean
-exploratory session: clean (60 avg fps)
-report written: games/fixture-pong/playtest-report/ (report.json, report.md, 16 screenshot(s))
+exploratory session: clean (59.9 avg fps)
+report written: games/fixture-pong/playtest-report/ (report.json, report.md, 15 screenshot(s))
 ```
 
 The playtest report lands in `<game-dir>/playtest-report/` — **git-ignored**,
