@@ -1,0 +1,249 @@
+name: verify
+
+# On every pull request, and on pushes to the default branch: npm ci, install
+# ONLY Chromium for Playwright, verify + regression on every dir in `games/`,
+# and playtest on changed game dirs (or every game dir, if the change could
+# affect all of them — see "Discover game directories" below), uploading the
+# playtest report(s) as an artifact. Must work for a PR from a FORK: no
+# secrets are used, and `permissions` is explicit read-only (the default
+# GITHUB_TOKEN a fork PR run gets is read-only regardless, but we say so here
+# rather than relying on repo settings). `workflow_dispatch` (fix round C1)
+# lets this run on demand, independent of a push/PR event.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history so the "changed game dirs" diff below has a base to
+          # compare against (a shallow clone can't diff against the PR base).
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Fix round (A9): "the suite never shrinks" was stated in
+      # tests/regression/README.md but unenforced — deleting the only test
+      # left `npm run regression` green. This is pure git, no dependencies
+      # needed yet, so it runs first and cheaply.
+      - name: Regression suite must never shrink
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            echo "no resolvable base commit (first push / manual dispatch / new branch) — nothing to compare against, skipping"
+            exit 0
+          fi
+          BEFORE=$(git ls-tree -r --name-only "$BASE" -- tests/regression 2>/dev/null | grep '\.test\.js$' || true)
+          AFTER=$(git ls-tree -r --name-only HEAD -- tests/regression 2>/dev/null | grep '\.test\.js$' || true)
+          MISSING=$(comm -23 <(echo "$BEFORE" | sort -u) <(echo "$AFTER" | sort -u) | sed '/^$/d' || true)
+          if [ -n "$MISSING" ]; then
+            echo "regression suite SHRANK — these test file(s) existed on the base commit ($BASE) but are missing from HEAD:"
+            echo "$MISSING"
+            exit 1
+          fi
+          echo "regression suite did not shrink ($(echo "$AFTER" | sed '/^$/d' | wc -l) test file(s) present, base $BASE)"
+
+      - name: npm ci
+        run: npm ci
+
+      # Fix round (R2): tools/ci-checks/scan-run-blocks.js existed but was
+      # never invoked by anything — not this workflow, not `npm run
+      # regression`, not a package script — so it protected nothing. It now
+      # runs here (also wired into `npm run regression`, see tests/regression
+      # /run.js, for local/pre-push coverage). Runs early, right after `npm
+      # ci` and before the ~180MB Chromium download, so a bad workflow file
+      # fails fast and cheaply.
+      #
+      # actionlint is the real, complete GitHub Actions expression/schema
+      # checker (tools/ci-checks/scan-run-blocks.js is deliberately a much
+      # narrower, dependency-free tripwire for this repo's specific X1 bug
+      # class); it is installed here from a PINNED release tag (not
+      # "latest"), so this step cannot start failing — or silently start
+      # passing something it used to catch — out from under us when a new
+      # actionlint version ships. The download is a single ~2MB tarball from
+      # GitHub's own release CDN and takes well under a second in testing;
+      # running both this scanner and actionlint costs a few seconds total
+      # and catches strictly more than either alone would.
+      #
+      # Fix round (this round): actionlint bundles a shellcheck pass over
+      # every `run:` block, and this GitHub-hosted runner has shellcheck
+      # preinstalled, so that pass is ACTIVE here. It is NOT active on a
+      # developer machine without shellcheck installed — actionlint just
+      # silently skips it, no warning — so a clean local `./actionlint` run
+      # does not prove this step will pass in CI. To reproduce this step
+      # locally, install shellcheck first (`apt-get install -y shellcheck`,
+      # or the `koalaman/shellcheck` static binary) — see the CI section of
+      # README.md.
+      - name: Lint GitHub Actions workflows (X1 regression guard)
+        run: |
+          set -e
+          node tools/ci-checks/scan-run-blocks.js .github/workflows/*.yml
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash | bash -s -- 1.7.12
+          ./actionlint .github/workflows/*.yml
+
+      # Cache the downloaded Chromium binary across runs (keyed on the
+      # Playwright version pinned in package-lock.json). `npx playwright
+      # install --with-deps chromium` still runs every time — it also
+      # apt-installs Chromium's runtime libraries, which isn't worth caching —
+      # but it skips the ~180MB browser download on a cache hit.
+      - name: Cache Playwright Chromium
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Chromium (Playwright) — Chromium ONLY, not all browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Discover game directories
+        id: games
+        run: |
+          set -e
+          # Fix round (this round): the previous version parsed `ls` output
+          # (`ls -d games/*/ | xargs -n1 basename`), which is exactly the shell
+          # anti-pattern shellcheck's SC2011 warns about (filenames from `ls`
+          # aren't safe to hand to another command this way). actionlint bundles
+          # a shellcheck pass over every `run:` block, and the GitHub runner has
+          # it installed, so that pass is ACTIVE in CI even when it is silently
+          # a no-op on a local machine that lacks shellcheck (see the README
+          # note on this job for how to reproduce that locally). Building the
+          # name array with a glob loop instead avoids parsing `ls` output
+          # entirely, so there is nothing left for that check to flag.
+          ALL_NAMES=()
+          for d in games/*/; do
+            [ -d "$d" ] || continue
+            ALL_NAMES+=("$(basename "$d")")
+          done
+          if [ "${#ALL_NAMES[@]}" -eq 0 ]; then
+            ALL_JSON='[]'
+          else
+            ALL_JSON=$(printf '%s\n' "${ALL_NAMES[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          fi
+          echo "all=$ALL_JSON" >> "$GITHUB_OUTPUT"
+          echo "discovered game dirs: $ALL_JSON"
+
+          # "Changed" game dirs: diff against the PR base on pull_request, or
+          # against the previous commit on a push to main. A brand-new branch
+          # (push.before is all-zeros) or any failure to resolve a base falls
+          # back to treating every game dir as changed, so nothing is missed.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] || ! git cat-file -e "$BASE" 2>/dev/null; then
+            CHANGED_JSON="$ALL_JSON"
+            echo "no resolvable base commit — treating every game dir as changed"
+          else
+            CHANGED_FILES=$(git diff --name-only "$BASE" "${{ github.sha }}")
+            # Fix round (A13b): a PR that only touches templates/ or tools/
+            # changes the SUBSTRATE every game is built on / verified through —
+            # treat that as "all game dirs changed" rather than playtesting
+            # nothing (the previous behaviour, since such a PR touches no path
+            # under games/ at all).
+            # Fix round (N9): package.json / package-lock.json (the toolchain
+            # itself — a dependency bump can change verifier/playtest/session
+            # behaviour just as much as an edit under tools/) and tests/ (the
+            # regression suite, whose contract every game is implicitly judged
+            # against) affect every game exactly the same way templates/ and
+            # tools/ do — they were missing from this check entirely, so a
+            # change to any of them playtested nothing.
+            # Fix round (R9): .github/workflows/ was missing from this check
+            # too — a workflow-only PR (e.g. editing this very file) touches
+            # no path under games/ either, so it playtested nothing under the
+            # old rule despite being exactly the kind of change (CI behaviour
+            # itself) every game is implicitly judged through.
+            if echo "$CHANGED_FILES" | grep -Eq '^(templates/|tools/|tests/|\.github/workflows/|package\.json$|package-lock\.json$)'; then
+              CHANGED_JSON="$ALL_JSON"
+              echo "templates/, tools/, tests/, .github/workflows/, package.json or package-lock.json changed — treating every game dir as changed"
+            else
+              CHANGED_JSON=$(echo "$CHANGED_FILES" | { grep '^games/' || true; } | awk -F/ '{print $2}' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')
+            fi
+          fi
+          echo "changed=$CHANGED_JSON" >> "$GITHUB_OUTPUT"
+          echo "changed game dirs: $CHANGED_JSON"
+
+      - name: Verify every game dir
+        run: |
+          FAILED=0
+          for dir in games/*/; do
+            name=$(basename "$dir")
+            echo "::group::verify $name"
+            if ! npm run verify -- "games/$name"; then
+              echo "verify FAILED for $name"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAILED
+
+      - name: Regression suite
+        run: npm run regression
+
+      # Fix round (A13a): this used to have no `if:`, so it was SKIPPED
+      # whenever the verify step above failed — exactly when a reviewer most
+      # wants the playtest report attached. `if: always()` (short of a
+      # cancelled run) makes it run regardless, using the same env: pattern
+      # as the interpolation fix below (A12).
+      - name: Playtest changed game dirs
+        if: always()
+        env:
+          CHANGED_JSON: ${{ steps.games.outputs.changed }}
+        run: |
+          FAILED=0
+          # Fix round (A12): the changed-dirs JSON is PR-controlled (it comes
+          # from directory names an attacker can choose). Piping it through
+          # `env:` and reading "$CHANGED_JSON" here avoids ever interpolating
+          # it directly into the shell command line the way the previous,
+          # unsafe version of this step used to (writing the expression
+          # literally into an echo call).
+          #
+          # NOTE: GitHub evaluates the double-curly template syntax ANYWHERE
+          # inside a `run:` block, including inside shell comments and quoted
+          # strings — it is not shell text. Never write that literal syntax
+          # in a comment here unless it is a real, valid expression.
+          CHANGED=$(echo "$CHANGED_JSON" | jq -r '.[]')
+          for name in $CHANGED; do
+            [ -z "$name" ] && continue
+            [ -d "games/$name" ] || continue
+            echo "::group::playtest $name"
+            if ! npm run playtest -- "games/$name"; then
+              echo "playtest FAILED for $name"
+              FAILED=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $FAILED
+
+      - name: Upload playtest reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playtest-reports
+          path: games/*/playtest-report/
+          if-no-files-found: ignore
+          retention-days: 14

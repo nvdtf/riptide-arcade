@@ -1,0 +1,9 @@
+{
+  "provenance": {
+    "tool": "tools/verify/fixtures/generate-glb-fixture.js",
+    "prompt": "hand-authored single-triangle mesh for budget.js unit tests",
+    "model": "n/a (hand-written binary, no generative model involved)"
+  },
+  "declaredTriangles": 1,
+  "rigStatus": "clean"
+}

@@ -1,0 +1,4 @@
+node_modules/
+playtest-report/
+npm-debug.log*
+.DS_Store
